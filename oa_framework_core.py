@@ -13,7 +13,8 @@ from abc import ABC, abstractmethod
 import uuid
 
 # Import our enums and schema
-from oa_framework_enums import *
+from oa_enums import *
+from oa_constants import *
 from oa_bot_schema import OABotConfigLoader, OABotConfigValidator
 
 # =============================================================================
