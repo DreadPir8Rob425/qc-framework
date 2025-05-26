@@ -4,14 +4,14 @@
 import sqlite3
 import csv
 import json
-import logging
 import threading
-import queue
 import uuid
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass, field
+from oa_framework_enums import LogCategory, PositionState, ErrorCode
+from oa_logging import FrameworkLogger
 from pathlib import Path
 import tempfile
 import zipfile
@@ -26,7 +26,8 @@ except ImportError:
 
 try:
     import pandas as pd
-    PANDAS_AVAILABLE = True
+    if pd is not None:
+        PANDAS_AVAILABLE = True
 except ImportError:
     PANDAS_AVAILABLE = False
     pd = None
@@ -168,7 +169,7 @@ class StateManager:
                              key=key, error=str(e))
             return default
     
-    def store_cold_state(self, data: Dict[str, Any], category: str, tags: List[str] = None) -> str:
+    def store_cold_state(self, data: Dict[str, Any], category: str, tags: Optional[List[str]] = None) -> str:
         """Store cold state data (historical)"""
         record_id = str(uuid.uuid4())
         tags_str = json.dumps(tags or [])
@@ -200,10 +201,10 @@ class StateManager:
                 
                 if start_date:
                     query += ' AND timestamp >= ?'
-                    params.append(start_date.timestamp())
+                    params.append(str(start_date.timestamp()))
                 
                 query += ' ORDER BY timestamp DESC LIMIT ?'
-                params.append(limit)
+                params.append(str(limit))
                 
                 cursor.execute(query, params)
                 results = cursor.fetchall()
@@ -349,8 +350,8 @@ class StateManager:
     # CSV EXPORT FUNCTIONALITY
     # =============================================================================
     
-    def configure_s3_export(self, bucket_name: str, aws_access_key_id: str = None, 
-                           aws_secret_access_key: str = None, region_name: str = 'us-east-1'):
+    def configure_s3_export(self, bucket_name: str, aws_access_key_id: Optional[str] = None, 
+                           aws_secret_access_key: Optional[str] = None, region_name: str = 'us-east-1'):
         """
         Configure S3 credentials for CSV export
         
@@ -364,27 +365,30 @@ class StateManager:
             raise RuntimeError("boto3 library not available. Install with: pip install boto3")
         
         try:
-            if aws_access_key_id and aws_secret_access_key:
-                self.s3_client = boto3.client(
-                    's3',
-                    aws_access_key_id=aws_access_key_id,
-                    aws_secret_access_key=aws_secret_access_key,
-                    region_name=region_name
-                )
+            if boto3 is not None:
+                if aws_access_key_id and aws_secret_access_key:
+                    self.s3_client = boto3.client(
+                        's3',
+                        aws_access_key_id=aws_access_key_id,
+                        aws_secret_access_key=aws_secret_access_key,
+                        region_name=region_name
+                    )
+                else:
+                    # Use default credentials (IAM role, ~/.aws/credentials, etc.)
+                    self.s3_client = boto3.client('s3', region_name=region_name)
+                
+                self.s3_bucket = bucket_name
+                
+                self._logger.info(LogCategory.SYSTEM, "S3 configuration completed",  # type: ignore
+                                bucket=bucket_name, region=region_name)
             else:
-                # Use default credentials (IAM role, ~/.aws/credentials, etc.)
-                self.s3_client = boto3.client('s3', region_name=region_name)
-            
-            self.s3_bucket = bucket_name
-            
-            self._logger.info(LogCategory.SYSTEM, "S3 configuration completed", 
-                            bucket=bucket_name, region=region_name)
-            
+                self._logger.error(LogCategory.SYSTEM, "boto3 was None")
+                
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to configure S3", error=str(e))
             raise
     
-    def export_to_csv(self, export_dir: str = None, include_hot_state: bool = True) -> Dict[str, str]:
+    def export_to_csv(self, export_dir: Optional[str] = None, include_hot_state: bool = True) -> Dict[str, str]:
         """
         Export all SQLite data to CSV files
         
@@ -447,7 +451,7 @@ class StateManager:
     def _export_warm_state_to_csv(self, file_path: Path) -> None:
         """Export warm state table to CSV"""
         try:
-            if PANDAS_AVAILABLE:
+            if PANDAS_AVAILABLE and pd is not None:
                 # Use pandas for enhanced CSV export
                 with sqlite3.connect(self.db_path) as conn:
                     df = pd.read_sql_query("SELECT * FROM warm_state ORDER BY timestamp DESC", conn)
@@ -471,7 +475,7 @@ class StateManager:
     def _export_cold_state_to_csv(self, file_path: Path) -> None:
         """Export cold state table to CSV"""
         try:
-            if PANDAS_AVAILABLE:
+            if PANDAS_AVAILABLE and pd is not None:
                 # Use pandas for enhanced CSV export
                 with sqlite3.connect(self.db_path) as conn:
                     df = pd.read_sql_query("SELECT * FROM cold_state ORDER BY timestamp DESC", conn)
@@ -496,7 +500,7 @@ class StateManager:
     def _export_positions_to_csv(self, file_path: Path) -> None:
         """Export positions table to CSV (raw format)"""
         try:
-            if PANDAS_AVAILABLE:
+            if PANDAS_AVAILABLE and pd is not None:
                 # Use pandas for enhanced CSV export
                 with sqlite3.connect(self.db_path) as conn:
                     df = pd.read_sql_query("SELECT * FROM positions ORDER BY opened_at DESC", conn)
@@ -570,7 +574,7 @@ class StateManager:
                     'leg_details': json.dumps(leg_details)
                 })
             
-            if PANDAS_AVAILABLE:
+            if PANDAS_AVAILABLE and pd is not None:
                 df = pd.DataFrame(summary_data)
                 df.to_csv(file_path, index=False)
             else:
@@ -605,7 +609,7 @@ class StateManager:
                         'category': entry['category']
                     })
                 
-                if PANDAS_AVAILABLE and hot_state_data:
+                if PANDAS_AVAILABLE and pd is not None and hot_state_data:
                     df = pd.DataFrame(hot_state_data)
                     df.to_csv(file_path, index=False)
                 else:

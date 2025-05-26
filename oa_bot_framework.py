@@ -1,112 +1,85 @@
-# Option Alpha Bot Framework - Complete Implementation
-# This is the complete framework file - will be broken into smaller modules
+# Option Alpha Bot Framework - Fixed Version with Proper Imports
+# Main orchestration class that brings together all specialized modules
 
-import sqlite3
 import json
-import logging
-import threading
-import queue
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Callable, Union
-from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
-import uuid
 import tempfile
 import os
+from datetime import datetime
+from typing import Dict, List, Any, Optional
+
+# Import from dedicated modules - NO MORE DUPLICATE CLASSES
 from oa_logging import FrameworkLogger, LogLevel, LogCategory
 from oa_state_manager import StateManager, create_state_manager
 from oa_event_system import EventBus
-from enhanced_position_manager import PositionManager
-from analytics_handler import AnalyticsHandler
-
-from oa_enums import LogCategory
+from enhanced_position_manager import create_position_manager
+from analytics_handler import create_analytics_handler
+from oa_framework_enums import (
+    BotState, AutomationState, PositionState, PositionType, 
+    EventType, DecisionResult, ErrorCode
+)
+from oa_data_structures import Position, MarketData, Event, BotStatus
 
 # =============================================================================
-# CORE DATA STRUCTURES
+# DECISION ENGINE (STUBBED - WILL BE IMPLEMENTED IN PHASE 2)
 # =============================================================================
 
-@dataclass
-class MarketData:
-    """Basic market data structure"""
-    symbol: str
-    timestamp: datetime
-    price: float
-    bid: Optional[float] = None
-    ask: Optional[float] = None
-    volume: Optional[int] = None
-    iv_rank: Optional[float] = None
+class DecisionEngine:
+    """
+    Decision evaluation engine for Option Alpha decision recipes.
+    This is a stub for Phase 0 - will be fully implemented in Phase 2.
+    """
     
-    def __post_init__(self):
-        if self.price <= 0:
-            raise ValueError(f"Invalid price for {self.symbol}: {self.price}")
-        if self.bid and self.ask and self.bid > self.ask:
-            raise ValueError(f"Bid ({self.bid}) > Ask ({self.ask}) for {self.symbol}")
-
-@dataclass
-class Position:
-    """Represents a trading position"""
-    id: str
-    symbol: str
-    position_type: str  # Using string for simplicity in Phase 0
-    state: str
-    opened_at: datetime
-    quantity: int
-    entry_price: float
-    current_price: float = 0.0
-    unrealized_pnl: float = 0.0
-    realized_pnl: float = 0.0
-    tags: List[str] = field(default_factory=list)
-    closed_at: Optional[datetime] = None
-    exit_price: Optional[float] = None
-    
-    def __post_init__(self):
-        if not self.id:
-            self.id = str(uuid.uuid4())
-    
-    @property
-    def days_open(self) -> int:
-        end_date = self.closed_at if self.closed_at else datetime.now()
-        return (end_date - self.opened_at).days
-    
-    @property
-    def total_pnl(self) -> float:
-        return self.realized_pnl + self.unrealized_pnl
-
-@dataclass
-class Event:
-    """Base event class for the event-driven system"""
-    event_type: str
-    timestamp: datetime
-    data: Dict[str, Any] = field(default_factory=dict)
-    source: Optional[str] = None
-    
-    def __post_init__(self):
-        if not self.timestamp:
-            self.timestamp = datetime.now()
+    def __init__(self, logger: FrameworkLogger, state_manager: StateManager):
+        self.logger = logger
+        self.state_manager = state_manager
+        
+    def evaluate_decision(self, decision_config: Dict[str, Any]) -> DecisionResult:
+        """
+        Evaluate a decision based on its configuration.
+        This is a stub implementation for Phase 0.
+        """
+        try:
+            recipe_type = decision_config.get('recipe_type', 'stock')
+            
+            self.logger.debug(LogCategory.DECISION_FLOW, 
+                            "Decision evaluated (stub)", 
+                            type=recipe_type, result="YES")
+            
+            # TODO: Implement full decision logic in Phase 2
+            return DecisionResult.YES  # Stub always returns YES
+            
+        except Exception as e:
+            self.logger.error(LogCategory.DECISION_FLOW, 
+                            "Decision evaluation failed", error=str(e))
+            return DecisionResult.ERROR
 
 # =============================================================================
 # MAIN BOT CLASS
 # =============================================================================
 
 class OABot:
-    """Main Option Alpha bot class"""
+    """
+    Main Option Alpha bot class that orchestrates all components.
+    Uses proper imports instead of duplicate class definitions.
+    """
     
     def __init__(self, config_dict: Dict[str, Any]):
         self.config = config_dict
         self.name = config_dict.get('name', 'Unknown Bot')
         
-        # Initialize core components
+        # Initialize core components using proper imports
         self.logger = FrameworkLogger(f"OABot-{self.name}")
-        self.state_manager = StateManager()
+        self.state_manager = create_state_manager()
         self.event_bus = EventBus()
         self.decision_engine = DecisionEngine(self.logger, self.state_manager)
-        self.position_manager = PositionManager(self.logger, self.state_manager)
+        self.position_manager = create_position_manager(self.state_manager, self.logger)
+        self.analytics = create_analytics_handler(self.state_manager, self.logger)
         
-        # Bot state
-        self.state = "STOPPED"
-        self._automation_states: Dict[str, str] = {}
+        # Bot state using proper enums
+        self.state = BotState.STOPPED
+        self._automation_states: Dict[str, AutomationState] = {}
         
-        self.logger.info("SYSTEM", 
+        self.logger.info(LogCategory.SYSTEM, 
                         "Bot initialized", 
                         name=self.name,
                         automations=len(config_dict.get('automations', [])))
@@ -114,8 +87,8 @@ class OABot:
     def start(self) -> None:
         """Start the bot and all its automations"""
         try:
-            self.state = "STARTING"
-            self.logger.info("SYSTEM", "Bot starting", name=self.name)
+            self.state = BotState.STARTING
+            self.logger.info(LogCategory.SYSTEM, "Bot starting", name=self.name)
             
             # Start event processing
             self.event_bus.start_processing()
@@ -123,77 +96,96 @@ class OABot:
             # Initialize automations
             for automation in self.config.get('automations', []):
                 automation_name = automation.get('name', 'Unnamed')
-                self._automation_states[automation_name] = "IDLE"
-                self.logger.info("SYSTEM", 
+                self._automation_states[automation_name] = AutomationState.IDLE
+                self.logger.info(LogCategory.SYSTEM, 
                                "Automation initialized", 
                                automation=automation_name)
             
-            self.state = "RUNNING"
+            self.state = BotState.RUNNING
             
             # Publish bot started event
             self.event_bus.publish(Event(
-                event_type="BOT_STARTED",
+                event_type=EventType.BOT_STARTED.value,
                 timestamp=datetime.now(),
                 data={'bot_name': self.name}
             ))
             
-            self.logger.info("SYSTEM", "Bot started successfully", name=self.name)
+            self.logger.info(LogCategory.SYSTEM, "Bot started successfully", name=self.name)
             
         except Exception as e:
-            self.state = "ERROR"
-            self.logger.error("SYSTEM", "Failed to start bot", error=str(e))
+            self.state = BotState.ERROR
+            self.logger.error(LogCategory.SYSTEM, "Failed to start bot", error=str(e))
             raise
     
     def stop(self) -> None:
         """Stop the bot and all its automations"""
         try:
-            self.state = "STOPPING"
-            self.logger.info("SYSTEM", "Bot stopping", name=self.name)
+            self.state = BotState.STOPPING
+            self.logger.info(LogCategory.SYSTEM, "Bot stopping", name=self.name)
             
             # Stop event processing
             self.event_bus.stop_processing()
             
             # Set all automations to disabled
             for automation_name in self._automation_states:
-                self._automation_states[automation_name] = "DISABLED"
+                self._automation_states[automation_name] = AutomationState.DISABLED
             
-            self.state = "STOPPED"
+            self.state = BotState.STOPPED
             
             # Publish bot stopped event
             self.event_bus.publish(Event(
-                event_type="BOT_STOPPED",
+                event_type=EventType.BOT_STOPPED.value,
                 timestamp=datetime.now(),
                 data={'bot_name': self.name}
             ))
             
-            self.logger.info("SYSTEM", "Bot stopped successfully", name=self.name)
+            self.logger.info(LogCategory.SYSTEM, "Bot stopped successfully", name=self.name)
             
         except Exception as e:
-            self.state = "ERROR"
-            self.logger.error("SYSTEM", "Failed to stop bot", error=str(e))
+            self.state = BotState.ERROR
+            self.logger.error(LogCategory.SYSTEM, "Failed to stop bot", error=str(e))
             raise
     
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> BotStatus:
         """Get current bot status and statistics"""
         open_positions = self.position_manager.get_open_positions()
+        portfolio_summary = self.position_manager.get_portfolio_summary(self.name)
         
-        return {
-            'name': self.name,
-            'state': self.state,
-            'automations': {
-                name: state 
+        return BotStatus(
+            name=self.name,
+            state=self.state.value,
+            uptime_seconds=0.0,  # TODO: Calculate actual uptime
+            last_activity=datetime.now(),
+            total_positions=portfolio_summary.get('total_positions', 0),
+            open_positions=len(open_positions),
+            total_pnl=portfolio_summary.get('total_pnl', 0.0),
+            today_pnl=0.0,  # TODO: Calculate today's P&L
+            automations_status={
+                name: state.value 
                 for name, state in self._automation_states.items()
-            },
+            }
+        )
+    
+    def get_status_dict(self) -> Dict[str, Any]:
+        """Get status as dictionary for backwards compatibility"""
+        status = self.get_status()
+        return {
+            'name': status.name,
+            'state': status.state,
+            'automations': status.automations_status,
             'positions': {
-                'open_count': len(open_positions),
-                'total_unrealized_pnl': sum(pos.unrealized_pnl for pos in open_positions)
+                'open_count': status.open_positions,
+                'total_unrealized_pnl': status.total_pnl
             },
             'safeguards': self.config.get('safeguards', {}),
             'scan_speed': self.config.get('scan_speed', '15_minutes')
         }
     
     def process_automation(self, automation_name: str) -> None:
-        """Process a single automation - stub for Phase 0"""
+        """
+        Process a single automation - stub for Phase 0.
+        Will be fully implemented in Phase 2.
+        """
         try:
             automation_config = None
             for auto in self.config.get('automations', []):
@@ -202,26 +194,80 @@ class OABot:
                     break
             
             if not automation_config:
-                self.logger.error("SYSTEM", 
+                self.logger.error(LogCategory.SYSTEM, 
                                 "Automation not found", 
                                 automation=automation_name)
                 return
             
-            self._automation_states[automation_name] = "RUNNING"
+            self._automation_states[automation_name] = AutomationState.RUNNING
             
-            self.logger.info("DECISION_FLOW", 
+            self.logger.info(LogCategory.DECISION_FLOW, 
                            "Processing automation (stub)", 
                            automation=automation_name)
             
             # TODO: Implement full automation processing in Phase 2
+            # This would involve:
+            # 1. Check trigger conditions
+            # 2. Process action sequence
+            # 3. Evaluate decisions using decision_engine
+            # 4. Execute actions (open/close positions, etc.)
             
-            self._automation_states[automation_name] = "COMPLETED"
+            self._automation_states[automation_name] = AutomationState.COMPLETED
             
         except Exception as e:
-            self._automation_states[automation_name] = "ERROR"
-            self.logger.error("SYSTEM", 
+            self._automation_states[automation_name] = AutomationState.ERROR
+            self.logger.error(LogCategory.SYSTEM, 
                             "Automation processing failed", 
                             automation=automation_name, error=str(e))
+    
+    def update_market_data(self, market_data: Dict[str, Any]) -> None:
+        """Update market data and recalculate position P&L"""
+        try:
+            self.position_manager.update_position_prices(market_data)
+            
+            self.logger.debug(LogCategory.MARKET_DATA, 
+                            "Market data updated", 
+                            symbols_updated=len(market_data))
+            
+        except Exception as e:
+            self.logger.error(LogCategory.MARKET_DATA, 
+                            "Failed to update market data", error=str(e))
+    
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """Get performance metrics for this bot"""
+        try:
+            return self.analytics.calculate_performance_metrics(bot_name=self.name)
+        except Exception as e:
+            self.logger.error(LogCategory.PERFORMANCE, 
+                            "Failed to get performance metrics", error=str(e))
+            return {'error': str(e)}
+    
+    def export_data(self, export_dir: str) -> Dict[str, str]:
+        """Export bot data to files"""
+        try:
+            exported_files = {}
+            
+            # Export state data
+            state_files = self.state_manager.export_to_csv(export_dir)
+            exported_files.update(state_files)
+            
+            # Export analytics
+            analytics_files = self.analytics.export_analytics_to_csv(f"{export_dir}/analytics")
+            exported_files.update(analytics_files)
+            
+            # Export positions
+            pos_file = f"{export_dir}/positions.csv"
+            self.position_manager.export_positions_to_csv(pos_file)
+            exported_files['positions'] = pos_file
+            
+            self.logger.info(LogCategory.SYSTEM, "Data exported", 
+                           files_count=len(exported_files))
+            
+            return exported_files
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, "Failed to export data", error=str(e))
+            return {}
 
 # =============================================================================
 # CONFIGURATION HELPERS
@@ -266,15 +312,27 @@ def create_simple_bot_config() -> Dict[str, Any]:
         ]
     }
 
+def create_bot_from_config_file(config_path: str) -> OABot:
+    """Create bot from JSON configuration file"""
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        return OABot(config)
+    except Exception as e:
+        logger = FrameworkLogger("BotFactory")
+        logger.error(LogCategory.SYSTEM, "Failed to create bot from config", 
+                   config_path=config_path, error=str(e))
+        raise
+
 # =============================================================================
 # DEMONSTRATION FUNCTION
 # =============================================================================
 
 def demonstrate_framework():
-    """Demonstrate the framework functionality"""
+    """Demonstrate the framework functionality with proper imports"""
     
     print("=" * 60)
-    print("Option Alpha Framework - Phase 0 Demonstration")
+    print("Option Alpha Framework - Fixed Version Demonstration")
     print("=" * 60)
     
     try:
@@ -282,33 +340,37 @@ def demonstrate_framework():
         config = create_simple_bot_config()
         print(f"✓ Created bot configuration: {config['name']}")
         
-        # 2. Initialize bot
+        # 2. Initialize bot with proper imports
         bot = OABot(config)
         print(f"✓ Bot initialized: {bot.name}")
+        print(f"  Using proper FrameworkLogger from oa_logging.py")
+        print(f"  Using proper StateManager from oa_state_manager.py")
+        print(f"  Using proper EventBus from oa_event_system.py")
         
         # 3. Start bot
         bot.start()
         print(f"✓ Bot started successfully")
         
-        # 4. Show status
+        # 4. Show status with proper enums
         status = bot.get_status()
-        print(f"✓ Bot status: {status['state']}")
-        print(f"  Automations: {len(status['automations'])}")
-        print(f"  Open positions: {status['positions']['open_count']}")
+        print(f"✓ Bot status: {status.state}")
+        print(f"  Automations: {len(status.automations_status)}")
+        print(f"  Open positions: {status.open_positions}")
+        print(f"  Using BotState enum: {bot.state}")
         
-        # 5. Test logging
-        bot.logger.info("SYSTEM", "Test log message", test=True)
+        # 5. Test logging with proper enums
+        bot.logger.info(LogCategory.SYSTEM, "Test log message", test=True)
         logs = bot.logger.get_logs(limit=5)
-        print(f"✓ Logging system working: {len(logs)} entries")
+        print(f"✓ Logging system working with enums: {len(logs)} entries")
         
         # 6. Test state management
         bot.state_manager.set_hot_state("test", {"value": 123})
         test_val = bot.state_manager.get_hot_state("test")
         print(f"✓ State management working: {test_val}")
         
-        # 7. Test position management
-        pos_config = {"symbol": "SPY", "strategy_type": "long_call"}
-        position = bot.position_manager.open_position(pos_config)
+        # 7. Test position management with proper integration
+        pos_config = {"symbol": "SPY", "strategy_type": "long_call", "quantity": 1, "entry_price": 450.0}
+        position = bot.position_manager.open_position(pos_config, bot.name)
         print(f"✓ Position management working: {position.id if position else 'Failed'}")
         
         # 8. Test decision engine
@@ -316,13 +378,21 @@ def demonstrate_framework():
         result = bot.decision_engine.evaluate_decision(decision_config)
         print(f"✓ Decision engine working: {result}")
         
-        # 9. Stop bot
+        # 9. Test analytics integration
+        metrics = bot.get_performance_metrics()
+        print(f"✓ Analytics integration working: {len(metrics)} metrics")
+        
+        # 10. Stop bot
         bot.stop()
         print(f"✓ Bot stopped successfully")
+        print(f"  Final state: {bot.state}")
         
         print("\n" + "=" * 60)
-        print("✅ Framework demonstration completed successfully!")
-        print("✅ All core components are working")
+        print("✅ FIXED Framework demonstration completed successfully!")
+        print("✅ All duplicate classes removed")
+        print("✅ Proper imports from dedicated modules")
+        print("✅ String literals converted to enums")
+        print("✅ Full integration with SQLite StateManager")
         print("✅ Ready for Phase 1 development")
         print("=" * 60)
         

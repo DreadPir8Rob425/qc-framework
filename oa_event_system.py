@@ -70,7 +70,7 @@ class EventPriority(Enum):
 class EventHandler(ABC):
     """Abstract base class for event handlers"""
     
-    def __init__(self, name: str = None):
+    def __init__(self, name: Optional[str] = None):
         self.name = name or self.__class__.__name__
         self.handler_id = str(uuid.uuid4())
         self._enabled = True
@@ -128,7 +128,7 @@ class FunctionHandler(EventHandler):
     """Event handler that wraps a function"""
     
     def __init__(self, event_types: List[EventType], handler_func: Callable[[Event], None], 
-                 name: str = None):
+                 name: Optional[str] = None):
         super().__init__(name)
         self.event_types = set(event_types)
         self.handler_func = handler_func
@@ -153,7 +153,7 @@ class ConditionalHandler(EventHandler):
     """Event handler that only processes events meeting certain conditions"""
     
     def __init__(self, event_types: List[EventType], handler_func: Callable[[Event], None],
-                 condition_func: Callable[[Event], bool], name: str = None):
+                 condition_func: Callable[[Event], bool], name: Optional[str] = None):
         super().__init__(name)
         self.event_types = set(event_types)
         self.handler_func = handler_func
@@ -179,7 +179,7 @@ class ConditionalHandler(EventHandler):
 class LoggingHandler(EventHandler):
     """Event handler that logs events"""
     
-    def __init__(self, logger: FrameworkLogger, event_types: List[EventType] = None,
+    def __init__(self, logger: FrameworkLogger, event_types: Optional[List[EventType]] = None,
                  log_level: LogLevel = LogLevel.INFO):
         super().__init__("LoggingHandler")
         self.logger = logger
@@ -275,7 +275,7 @@ class EventBus:
     
     def subscribe_function(self, event_types: List[EventType], 
                           handler_func: Callable[[Event], None],
-                          name: str = None) -> str:
+                          name: Optional[str] = None) -> str:
         """Subscribe a function to handle events"""
         handler = FunctionHandler(event_types, handler_func, name)
         
@@ -288,7 +288,7 @@ class EventBus:
     def subscribe_conditional(self, event_types: List[EventType],
                             handler_func: Callable[[Event], None],
                             condition_func: Callable[[Event], bool],
-                            name: str = None) -> str:
+                            name: Optional[str] = None) -> str:
         """Subscribe a conditional handler"""
         handler = ConditionalHandler(event_types, handler_func, condition_func, name)
         
