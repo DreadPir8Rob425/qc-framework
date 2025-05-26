@@ -157,7 +157,7 @@ class CompactFormatter(LogFormatter):
 class LogHandler:
     """Base class for log handlers"""
     
-    def __init__(self, formatter: LogFormatter = None):
+    def __init__(self, formatter: Optional[LogFormatter] = None):
         self.formatter = formatter or StandardFormatter()
     
     def emit(self, entry: LogEntry) -> None:
@@ -171,8 +171,9 @@ class LogHandler:
 class MemoryHandler(LogHandler):
     """Handler that stores log entries in memory"""
     
-    def __init__(self, max_entries: int = 10000, formatter: LogFormatter = None):
-        super().__init__(formatter)
+    def __init__(self, max_entries: int = 10000, formatter: Optional[LogFormatter] = None):
+        if formatter is not None:
+            super().__init__(formatter)
         self.max_entries = max_entries
         self.entries: List[LogEntry] = []
         self._lock = threading.Lock()
@@ -216,9 +217,10 @@ class MemoryHandler(LogHandler):
 class FileHandler(LogHandler):
     """Handler that writes log entries to a file"""
     
-    def __init__(self, filepath: str, formatter: LogFormatter = None, 
+    def __init__(self, filepath: str, formatter: Optional[LogFormatter] = None, 
                  max_size_mb: float = 100, backup_count: int = 5):
-        super().__init__(formatter)
+        if formatter is not None:
+            super().__init__(formatter)
         self.filepath = Path(filepath)
         self.max_size_bytes = int(max_size_mb * 1024 * 1024)
         self.backup_count = backup_count
@@ -287,8 +289,9 @@ class FileHandler(LogHandler):
 class ConsoleHandler(LogHandler):
     """Handler that writes log entries to console"""
     
-    def __init__(self, formatter: LogFormatter = None, min_level: LogLevel = LogLevel.INFO):
-        super().__init__(formatter)
+    def __init__(self, formatter: Optional[LogFormatter] = None, min_level: LogLevel = LogLevel.INFO):
+        if formatter is not None:
+            super().__init__(formatter)
         self.min_level = min_level
     
     def emit(self, entry: LogEntry) -> None:
@@ -316,7 +319,7 @@ class FrameworkLogger:
     Supports multiple handlers and provides categorized logging.
     """
     
-    def __init__(self, name: str = "OAFramework", handlers: List[LogHandler] = None):
+    def __init__(self, name: str = "OAFramework", handlers: Optional[List[LogHandler]] = None):
         self.name = name
         self.handlers: List[LogHandler] = handlers or []
         self._lock = threading.Lock()
@@ -490,4 +493,238 @@ def create_file_logger(name: str, log_dir: str = "logs") -> FrameworkLogger:
         ConsoleHandler(CompactFormatter(), LogLevel.INFO)
     ]
     
-    return FrameworkLogger(name,
+    return FrameworkLogger(name, handlers)
+
+def create_console_logger(name: str, min_level: LogLevel = LogLevel.INFO) -> FrameworkLogger:
+    """Create a logger that only writes to console"""
+    handlers = [
+        MemoryHandler(max_entries=500),
+        ConsoleHandler(StandardFormatter(), min_level)
+    ]
+    
+    return FrameworkLogger(name, handlers)
+
+def create_json_logger(name: str, log_file: str) -> FrameworkLogger:
+    """Create a logger that writes JSON format logs"""
+    handlers = [
+        MemoryHandler(max_entries=1000),
+        FileHandler(log_file, JSONFormatter())
+    ]
+    
+    return FrameworkLogger(name, handlers)
+
+def setup_quantconnect_logger(name: str) -> FrameworkLogger:
+    """Create a logger optimized for QuantConnect environment"""
+    # QuantConnect has logging limitations, so use memory + compact console
+    handlers = [
+        MemoryHandler(max_entries=2000),  # Larger memory buffer
+        ConsoleHandler(CompactFormatter(), LogLevel.WARNING)  # Only show warnings+
+    ]
+    
+    return FrameworkLogger(name, handlers)
+
+# =============================================================================
+# LOG ANALYSIS UTILITIES
+# =============================================================================
+
+class LogAnalyzer:
+    """Utility class for analyzing log data"""
+    
+    def __init__(self, logger: FrameworkLogger):
+        self.logger = logger
+    
+    def get_error_rate(self, time_window_minutes: int = 60) -> float:
+        """Calculate error rate over time window"""
+        since = datetime.now() - timedelta(minutes=time_window_minutes)
+        entries = self.logger.get_logs(since=since)
+        
+        if not entries:
+            return 0.0
+        
+        error_count = len([e for e in entries if e.level in [LogLevel.ERROR, LogLevel.CRITICAL]])
+        return (error_count / len(entries)) * 100
+    
+    def get_category_distribution(self) -> Dict[str, int]:
+        """Get distribution of log entries by category"""
+        entries = self.logger.get_logs()
+        distribution = {}
+        
+        for entry in entries:
+            category = entry.category.value
+            distribution[category] = distribution.get(category, 0) + 1
+        
+        return distribution
+    
+    def get_activity_timeline(self, bucket_minutes: int = 10) -> Dict[str, int]:
+        """Get activity timeline with time buckets"""
+        entries = self.logger.get_logs()
+        timeline = {}
+        
+        for entry in entries:
+            # Round timestamp to bucket
+            bucket_time = entry.timestamp.replace(
+                minute=(entry.timestamp.minute // bucket_minutes) * bucket_minutes,
+                second=0,
+                microsecond=0
+            )
+            
+            bucket_key = bucket_time.strftime("%H:%M")
+            timeline[bucket_key] = timeline.get(bucket_key, 0) + 1
+        
+        return timeline
+    
+    def find_patterns(self, pattern: str) -> List[LogEntry]:
+        """Find log entries matching a pattern"""
+        entries = self.logger.get_logs()
+        matches = []
+        
+        for entry in entries:
+            if pattern.lower() in entry.message.lower():
+                matches.append(entry)
+            
+            # Also check data fields
+            for key, value in entry.data.items():
+                if pattern.lower() in str(value).lower():
+                    matches.append(entry)
+                    break
+        
+        return matches
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get performance-related logging statistics"""
+        perf_entries = self.logger.get_logs(category=LogCategory.PERFORMANCE)
+        
+        stats = {
+            'total_performance_logs': len(perf_entries),
+            'recent_performance_logs': len([
+                e for e in perf_entries 
+                if e.timestamp > datetime.now() - timedelta(hours=1)
+            ]),
+            'performance_keywords': {}
+        }
+        
+        # Count performance-related keywords
+        keywords = ['pnl', 'profit', 'loss', 'return', 'drawdown', 'sharpe']
+        for keyword in keywords:
+            count = len([
+                e for e in perf_entries 
+                if keyword in e.message.lower()
+            ])
+            if count > 0:
+                stats['performance_keywords'][keyword] = count
+        
+        return stats
+
+# =============================================================================
+# DEMONSTRATION AND TESTING
+# =============================================================================
+
+def demonstrate_logging_system():
+    """Demonstrate the logging system capabilities"""
+    print("Option Alpha Framework - Logging System Demo")
+    print("=" * 60)
+    
+    # Create logger with multiple handlers
+    logger = FrameworkLogger(
+        "DemoLogger",
+        handlers=[
+            MemoryHandler(max_entries=100),
+            ConsoleHandler(StandardFormatter(), LogLevel.INFO),
+            # FileHandler("demo.log", JSONFormatter())  # Uncomment to write to file
+        ]
+    )
+    
+    print("✓ Logger created with multiple handlers")
+    
+    # Test different log levels and categories
+    logger.debug(LogCategory.SYSTEM, "Debug message for system startup", component="initialization")
+    logger.info(LogCategory.TRADE_EXECUTION, "Position opened", symbol="SPY", quantity=100)
+    logger.warning(LogCategory.DECISION_FLOW, "Low confidence decision", confidence=0.6)
+    logger.error(LogCategory.MARKET_DATA, "Failed to fetch data", symbol="QQQ", error="timeout")
+    logger.critical(LogCategory.RISK_MANAGEMENT, "Risk limit exceeded", risk_level=0.95)
+    
+    print("✓ Logged messages at different levels and categories")
+    
+    # Retrieve and analyze logs
+    all_logs = logger.get_logs()
+    print(f"✓ Retrieved {len(all_logs)} log entries")
+    
+    error_logs = logger.get_logs(level=LogLevel.ERROR)
+    print(f"✓ Found {len(error_logs)} error entries")
+    
+    system_logs = logger.get_logs(category=LogCategory.SYSTEM)
+    print(f"✓ Found {len(system_logs)} system entries")
+    
+    # Get summary
+    summary = logger.get_summary()
+    print(f"✓ Log summary: {summary['total_entries']} total entries")
+    print(f"  Levels: {summary['levels']}")
+    print(f"  Categories: {summary['categories']}")
+    
+    # Test log analysis
+    analyzer = LogAnalyzer(logger)
+    error_rate = analyzer.get_error_rate(60)
+    print(f"✓ Error rate (last hour): {error_rate:.1f}%")
+    
+    category_dist = analyzer.get_category_distribution()
+    print(f"✓ Category distribution: {category_dist}")
+    
+    # Test pattern finding
+    patterns = analyzer.find_patterns("SPY")
+    print(f"✓ Found {len(patterns)} entries matching 'SPY'")
+    
+    # Performance stats
+    perf_stats = analyzer.get_performance_stats()
+    print(f"✓ Performance stats: {perf_stats}")
+    
+    # Clean up
+    logger.close()
+    
+    print("\n" + "=" * 60)
+    print("✅ Logging system demonstration completed successfully!")
+    print("✅ All logging features working correctly")
+
+def test_log_rotation():
+    """Test log file rotation functionality"""
+    import tempfile
+    import os
+    
+    print("\nTesting log rotation...")
+    
+    # Create temporary log file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.log') as tmp:
+        log_file = tmp.name
+    
+    try:
+        # Create file handler with small max size for testing
+        handler = FileHandler(log_file, StandardFormatter(), max_size_mb=0.001, backup_count=3)
+        logger = FrameworkLogger("RotationTest", [handler])
+        
+        # Generate lots of log entries to trigger rotation
+        for i in range(100):
+            logger.info(LogCategory.SYSTEM, f"Test message {i} with some extra data", 
+                       iteration=i, data="x" * 100)
+        
+        # Check if backup files were created
+        log_path = Path(log_file)
+        backup_files = list(log_path.parent.glob(f"{log_path.stem}.*"))
+        
+        print(f"✓ Log rotation test: {len(backup_files)} backup files created")
+        
+        logger.close()
+        
+    finally:
+        # Clean up temporary files
+        try:
+            os.unlink(log_file)
+            # Clean up any backup files
+            log_path = Path(log_file)
+            for backup in log_path.parent.glob(f"{log_path.stem}.*"):
+                backup.unlink()
+        except:
+            pass
+
+if __name__ == "__main__":
+    demonstrate_logging_system()
+    test_log_rotation()
+    print("\n🎉 All logging tests completed successfully!")

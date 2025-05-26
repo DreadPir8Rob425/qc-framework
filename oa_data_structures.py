@@ -248,7 +248,7 @@ class Position:
             if total_quantity > 0:
                 self.current_price = total_value / total_quantity
 
-    def close_position(self, exit_price: float = None, exit_reason: str = "Manual") -> None:
+    def close_position(self, exit_price: Optional[float] = None, exit_reason: str = "Manual") -> None:
         """Close the position and calculate final P&L"""
         self.state = 'CLOSED'
         self.closed_at = datetime.now()

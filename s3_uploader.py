@@ -113,11 +113,15 @@ class S3Uploader:
                     # Upload file
                     try:
                         file_size = file_path.stat().st_size
-                        self._s3_client.upload_file(
-                            str(file_path), 
-                            self.bucket_name, 
-                            s3_key
-                        )
+                        if self._s3_client is not None:
+                            self._s3_client.upload_file(
+                                str(file_path), 
+                                self.bucket_name, 
+                                s3_key
+                            )
+                        else:
+                            self._logger.error("S3 client not initialized. Skipping upload.")
+                            continue
                         
                         uploaded_files += 1
                         total_size += file_size
@@ -173,7 +177,12 @@ class S3Uploader:
             return False
         
         try:
-            self._s3_client.upload_file(str(local_file), self.bucket_name, s3_key)
+            if self._s3_client is not None:
+                self._s3_client.upload_file(str(local_file), self.bucket_name, s3_key)
+            else:
+                self._logger.error("S3 client not initialized. Skipping upload.")
+                return False
+                
             self._logger.info(f"File uploaded: {local_file} -> s3://{self.bucket_name}/{s3_key}")
             return True
         except Exception as e:

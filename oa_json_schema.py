@@ -351,8 +351,11 @@ class OABotConfigValidator:
             
             return len(errors) == 0, errors
             
-        except ValidationError as e if JSONSCHEMA_AVAILABLE else Exception as e:
-            errors.append(f"Schema validation error: {str(e)}")
+        except Exception as e:
+            if JSONSCHEMA_AVAILABLE and isinstance(e, ValidationError):
+                errors.append(f"Schema validation error: {str(e)}")
+            else:
+                errors.append(f"Generic error: {str(e)}")
             return False, errors
     
     def _basic_validation(self, config: Dict[str, Any]) -> List[str]:

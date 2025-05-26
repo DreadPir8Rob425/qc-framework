@@ -290,7 +290,7 @@ class StateManager:
             return default
     
     # Cold State Methods (Historical Data)
-    def store_cold_state(self, data: Dict[str, Any], category: str, tags: List[str] = None) -> str:
+    def store_cold_state(self, data: Dict[str, Any], category: str, tags: Optional[List[str]] = None) -> str:
         record_id = str(uuid.uuid4())
         tags_str = json.dumps(tags or [])
         
@@ -320,10 +320,10 @@ class StateManager:
                 
                 if start_date:
                     query += ' AND timestamp >= ?'
-                    params.append(start_date.timestamp())
+                    params.append(str(start_date.timestamp()))
                 
                 query += ' ORDER BY timestamp DESC LIMIT ?'
-                params.append(limit)
+                params.append(str(limit))
                 
                 cursor.execute(query, params)
                 results = cursor.fetchall()
@@ -561,7 +561,7 @@ class PositionManager:
                             "Failed to open position", error=str(e))
             return None
     
-    def close_position(self, position_id: str, close_config: Dict[str, Any] = None) -> bool:
+    def close_position(self, position_id: str, close_config: Optional[Dict[str, Any]] = None) -> bool:
         """Close an existing position - stub implementation"""
         try:
             with self._lock:
