@@ -1,16 +1,41 @@
 #!/usr/bin/env python3
 """
-Option Alpha Framework - Usage Example
-Demonstrates how to use the modular framework components
+Option Alpha Framework - Usage Example (Fixed)
+Demonstrates how to use the modular framework components with proper attribute access
 """
 
 import json
 from pathlib import Path
+from datetime import datetime
 
 # Import framework components
 from oa_config_generator import OABotConfigGenerator
-from oa_bot_framework import OABot
+from oa_bot_framework import OABot, create_simple_bot_config
 from oa_json_schema import OABotConfigLoader
+
+def safe_enum_value(enum_obj):
+    """Safely get the value from an enum or return the object as string if it's not an enum"""
+    return enum_obj.value if hasattr(enum_obj, 'value') else str(enum_obj)
+
+def create_bot_from_template(template_name: str, data_dir: str, s3_bucket=None):
+    """Create a bot from a template configuration"""
+    generator = OABotConfigGenerator()
+    
+    # Generate config based on template name
+    if template_name == '0dte_samurai':
+        config = generator.generate_0dte_samurai_bot()
+    elif template_name == 'iron_condor':
+        config = generator.generate_iron_condor_bot()
+    elif template_name == 'simple_long_call':
+        config = generator.generate_simple_long_call_bot()
+    else:
+        # Default to simple config
+        config = create_simple_bot_config()
+    
+    # Create bot with config dictionary 
+    # Note: OABot constructor expects config_dict parameter
+    bot = OABot(config_dict=config)
+    return bot
 
 def example_1_create_from_template():
     """Example 1: Create and run a bot from a template"""
@@ -25,26 +50,37 @@ def example_1_create_from_template():
         s3_bucket=None  # Set to your bucket name if you want S3 upload
     )
     
-    print(f"✓ Created bot: {bot.config.name}")
-    print(f"✓ Backtest ID: {bot.state_manager.get_backtest_id()}")
-    print(f"✓ Automations: {len(bot.config.automations)}")
+    # Fix: Access config as dictionary, not object
+    print(f"✓ Created bot: {bot.config['name']}")
+    print(f"✓ Automations: {len(bot.config['automations'])}")
     
     # Start the bot
     bot.start()
     
-    # Run a short simulation
+    # Run a short simulation (stub functionality)
     print("\nRunning 3-step simulation...")
-    results = bot.run_backtest_simulation(steps=3)
-    print(f"✓ Simulation completed: {results}")
+    # Note: run_backtest_simulation doesn't exist in the current framework
+    # We'll simulate with basic operations instead
+    
+    # Test position opening
+    position_config = {
+        "symbol": "SPX",
+        "strategy_type": "iron_condor",
+        "quantity": 1
+    }
+    
+    position = bot.position_manager.open_position(position_config)
+    if position:
+        print(f"✓ Opened test position: {position.symbol}")
     
     # Get status
     status = bot.get_status()
-    print(f"✓ Open positions: {status['positions']['open_count']}")
+    print(f"✓ Open positions: {status.open_positions}")
     
     # Stop and finalize
     bot.stop()
-    finalization = bot.finalize_backtest(upload_to_s3=False)
-    print(f"✓ Results saved to: {finalization['local_path']}")
+    
+    print(f"✓ Bot stopped successfully")
     
     return bot
 
@@ -161,22 +197,20 @@ def example_2_custom_configuration():
     }
     
     # Create bot from custom configuration
-    bot = OABot(
-        config_dict=custom_config,
-        data_dir='custom_backtest_data'
-    )
+    bot = OABot(config_dict=custom_config)
     
-    print(f"✓ Created custom bot: {bot.config.name}")
-    print(f"✓ Capital allocation: ${bot.config.safeguards['capital_allocation']:,}")
-    print(f"✓ Scan speed: {bot.config.scan_speed}")
+    # Fix: Access config as dictionary
+    print(f"✓ Created custom bot: {bot.config['name']}")
+    print(f"✓ Capital allocation: ${bot.config['safeguards']['capital_allocation']:,}")
+    print(f"✓ Scan speed: {bot.config['scan_speed']}")
     
     # Start and run
     bot.start()
     
     # Process specific automation
-    automation_name = bot.config.automations[1]['name']  # Call Buying Scanner
-    success = bot.process_automation(automation_name)
-    print(f"✓ Processed '{automation_name}': {success}")
+    automation_name = bot.config['automations'][1]['name']  # Call Buying Scanner
+    bot.process_automation(automation_name)
+    print(f"✓ Processed '{automation_name}'")
     
     bot.stop()
     return bot
@@ -209,13 +243,14 @@ def example_3_save_and_load_config():
     print(f"\nConfiguration Summary:")
     print(summary)
     
-    # Create bot from loaded config
-    bot = OABot(config_path=str(config_file), data_dir='loaded_config_data')
+    # Create bot from loaded config - use loaded_config with named parameter
+    bot = OABot(config_dict=loaded_config)
     
-    print(f"\n✓ Bot created from file: {bot.config.name}")
+    print(f"\n✓ Bot created from file: {bot.config['name']}")
     
     # Clean up
-    config_file.unlink()
+    if config_file.exists():
+        config_file.unlink()
     
     return bot
 
@@ -229,47 +264,47 @@ def example_4_analyze_results():
     bot = create_bot_from_template('iron_condor', data_dir='analysis_data')
     bot.start()
     
-    print("Running extended simulation for analysis...")
-    results = bot.run_backtest_simulation(steps=8)
+    print("Running simulation for analysis...")
+    
+    # Simulate some trading activity
+    for i in range(3):
+        position_config = {
+            "symbol": ["SPY", "QQQ", "IWM"][i],
+            "strategy_type": "iron_condor",
+            "quantity": 1
+        }
+        position = bot.position_manager.open_position(position_config)
+        if position:
+            print(f"  ✓ Opened position: {position.symbol}")
     
     # Get detailed status
     status = bot.get_status()
     print(f"\nBot Status:")
-    print(f"  Name: {status['name']}")
-    print(f"  State: {status['state']}")
-    print(f"  Open Positions: {status['positions']['open_count']}")
-    print(f"  Total P&L: ${status['positions']['total_unrealized_pnl']:.2f}")
+    print(f"  Name: {status.name}")
+    print(f"  State: {status.state}")
+    print(f"  Open Positions: {status.open_positions}")
+    print(f"  Total P&L: ${status.total_pnl:.2f}")
     
-    # Get position details
-    positions = bot.state_manager.get_positions()
+    # Get position details from position manager
+    positions = bot.position_manager.get_open_positions()
     print(f"\nPosition Details:")
     for i, pos in enumerate(positions[:5], 1):  # Show first 5
-        print(f"  {i}. {pos['symbol']} {pos['position_type']} - ${pos['unrealized_pnl']:.2f} P&L")
+        # Use safe enum value helper function
+        pos_type = safe_enum_value(pos.position_type)
+        print(f"  {i}. {pos.symbol} {pos_type} - ${pos.unrealized_pnl:.2f} P&L")
     
     # Stop and get final results
     bot.stop()
-    final_results = bot.finalize_backtest(upload_to_s3=False)
     
-    print(f"\nBacktest Summary:")
-    if 'summary' in final_results:
-        summary = final_results['summary']
-        if 'statistics' in summary:
-            stats = summary['statistics']
-            if 'positions' in stats:
-                pos_stats = stats['positions']
-                print(f"  Total Positions: {pos_stats.get('total_positions', 0)}")
-                print(f"  Open Positions: {pos_stats.get('open_positions', 0)}")
-                print(f"  Closed Positions: {pos_stats.get('closed_positions', 0)}")
-                print(f"  Total P&L: ${pos_stats.get('total_pnl', 0):.2f}")
-            
-            if 'trades' in stats:
-                trade_stats = stats['trades']
-                print(f"  Total Trades: {trade_stats.get('total_trades', 0)}")
-                print(f"  Symbols Traded: {trade_stats.get('symbols_traded', 0)}")
+    # Get portfolio summary
+    portfolio_summary = bot.position_manager.get_portfolio_summary()
+    print(f"\nPortfolio Summary:")
+    print(f"  Total Positions: {portfolio_summary.get('total_positions', 0)}")
+    print(f"  Open Positions: {portfolio_summary.get('open_positions', 0)}")
+    print(f"  Total P&L: ${portfolio_summary.get('total_pnl', 0):.2f}")
+    print(f"  Win Rate: {portfolio_summary.get('win_rate', 0):.1f}%")
     
-    print(f"  Data Location: {final_results['local_path']}")
-    
-    return final_results
+    return portfolio_summary
 
 def main():
     """Run all examples"""
@@ -291,18 +326,16 @@ def main():
         print("  ✓ Custom configuration building")
         print("  ✓ JSON file save/load operations")
         print("  ✓ Backtest simulation and analysis")
-        print("  ✓ CSV data export and state management")
+        print("  ✓ Position management and portfolio tracking")
         print("  ✓ Comprehensive result reporting")
         
         print(f"\n📊 Data Directories Created:")
-        data_dirs = ['example_backtest_data', 'custom_backtest_data', 
-                    'loaded_config_data', 'analysis_data']
+        data_dirs = ['example_backtest_data', 'analysis_data']
         for dir_name in data_dirs:
             dir_path = Path(dir_name)
             if dir_path.exists():
-                csv_files = list(dir_path.rglob('*.csv'))
-                json_files = list(dir_path.rglob('*.json'))
-                print(f"  📁 {dir_name}: {len(csv_files)} CSV files, {len(json_files)} JSON files")
+                files = list(dir_path.rglob('*'))
+                print(f"  📁 {dir_name}: {len(files)} files")
         
         print(f"\n🚀 Framework ready for QuantConnect integration!")
         print("Next step: Implement QuantConnect Algorithm class in Phase 1")
