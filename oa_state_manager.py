@@ -1,536 +1,283 @@
-# Option Alpha Framework - State Management System
-# Multi-layered state management with hot/warm/cold storage
+# Option Alpha Framework - Enhanced State Management System
+# Multi-layered state management with SQLite performance and CSV export capabilities
 
 import sqlite3
+import csv
 import json
+import logging
 import threading
+import queue
+import uuid
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
+from dataclasses import dataclass, field
 from pathlib import Path
-import uuid
-from contextlib import contextmanager
+import tempfile
+import zipfile
 
-from oa_data_structures import Position, TradeRecord, PortfolioSnapshot
-from oa_logging import FrameworkLogger, LogCategory, LogLevel
+# Optional dependencies for enhanced functionality
+try:
+    import boto3
+    S3_AVAILABLE = True
+except ImportError:
+    S3_AVAILABLE = False
+    boto3 = None
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    pd = None
+
+# Import framework components
+from oa_framework_enums import *
 
 # =============================================================================
-# STATE MANAGEMENT CONSTANTS
-# =============================================================================
-
-class StateConstants:
-    DEFAULT_DATABASE_FILE = "oa_framework.db"
-    DEFAULT_MAX_HOT_ENTRIES = 1000
-    DEFAULT_CONNECTION_TIMEOUT = 30
-    DEFAULT_QUERY_TIMEOUT = 60
-    VACUUM_INTERVAL_HOURS = 24
-
-# =============================================================================
-# MULTI-LAYERED STATE MANAGER
+# ENHANCED STATE MANAGER WITH CSV EXPORT
 # =============================================================================
 
 class StateManager:
     """
-    Multi-layered state management system:
-    - Hot State: In-memory for real-time decisions (current positions, prices)
-    - Warm State: SQLite for session data (daily P&L, automation status)
-    - Cold State: SQLite for historical data (completed trades, analytics)
+    Multi-layered state management system with CSV export capabilities:
+    - Hot State: In-memory for real-time decisions
+    - Warm State: SQLite for session data (fast queries)
+    - Cold State: SQLite for historical data (fast queries)
+    - CSV Export: Export all data to CSV files for S3 upload
     """
     
-    def __init__(self, db_path: str = None, max_hot_entries: int = None):
-        self.db_path = Path(db_path or StateConstants.DEFAULT_DATABASE_FILE)
-        self.max_hot_entries = max_hot_entries or StateConstants.DEFAULT_MAX_HOT_ENTRIES
-        
-        # Hot state storage (in-memory)
+    def __init__(self, db_path: str = FrameworkConstants.DEFAULT_DATABASE_FILE):
+        self.db_path = db_path
         self._hot_state: Dict[str, Any] = {}
-        self._hot_state_timestamps: Dict[str, datetime] = {}
-        self._lock = threading.RLock()  # Reentrant lock for nested calls
-        
-        # Initialize logger
-        self.logger = FrameworkLogger("StateManager")
-        
-        # Initialize database
+        self._lock = threading.Lock()
+        self._logger = FrameworkLogger("StateManager")
         self._init_database()
         
-        # Track last vacuum time
-        self._last_vacuum = datetime.now()
+        # CSV export configuration
+        self.export_directory = "exports"
+        self.s3_client = None
+        self.s3_bucket = None
         
-        self.logger.info(LogCategory.SYSTEM, "State manager initialized", 
-                        db_path=str(self.db_path))
-    
     def _init_database(self) -> None:
-        """Initialize SQLite database with required tables"""
+        """Initialize SQLite database for warm and cold state"""
         try:
-            # Create directory if it doesn't exist
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # Warm state table for session data
+                # Create tables for different state types
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS warm_state (
                         key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL,
-                        timestamp REAL NOT NULL,
-                        category TEXT NOT NULL DEFAULT 'default',
-                        expires_at REAL
+                        value TEXT,
+                        timestamp REAL,
+                        category TEXT
                     )
                 ''')
                 
-                # Cold state table for historical data
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS cold_state (
                         id TEXT PRIMARY KEY,
-                        data TEXT NOT NULL,
-                        timestamp REAL NOT NULL,
-                        category TEXT NOT NULL,
-                        tags TEXT,
-                        metadata TEXT
-                    )
-                ''')
-                
-                # Positions table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS positions (
-                        id TEXT PRIMARY KEY,
-                        symbol TEXT NOT NULL,
-                        position_type TEXT NOT NULL,
-                        state TEXT NOT NULL,
-                        data TEXT NOT NULL,
-                        opened_at REAL NOT NULL,
-                        closed_at REAL,
-                        tags TEXT,
-                        bot_name TEXT,
-                        automation_name TEXT
-                    )
-                ''')
-                
-                # Trades table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS trades (
-                        trade_id TEXT PRIMARY KEY,
-                        timestamp REAL NOT NULL,
-                        symbol TEXT NOT NULL,
-                        action TEXT NOT NULL,
-                        position_type TEXT NOT NULL,
-                        quantity INTEGER NOT NULL,
-                        price REAL NOT NULL,
-                        fees REAL DEFAULT 0,
-                        pnl REAL DEFAULT 0,
-                        position_id TEXT,
-                        bot_name TEXT,
-                        automation_name TEXT,
+                        data TEXT,
+                        timestamp REAL,
+                        category TEXT,
                         tags TEXT
                     )
                 ''')
                 
-                # Portfolio snapshots table
                 cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    CREATE TABLE IF NOT EXISTS positions (
                         id TEXT PRIMARY KEY,
-                        timestamp REAL NOT NULL,
-                        total_value REAL NOT NULL,
-                        cash_balance REAL NOT NULL,
-                        positions_value REAL NOT NULL,
-                        open_positions INTEGER NOT NULL,
-                        pnl_today REAL NOT NULL,
-                        pnl_all_time REAL NOT NULL,
-                        portfolio_delta REAL DEFAULT 0,
-                        portfolio_gamma REAL DEFAULT 0,
-                        portfolio_theta REAL DEFAULT 0,
-                        portfolio_vega REAL DEFAULT 0,
-                        max_risk REAL DEFAULT 0,
-                        additional_data TEXT
+                        symbol TEXT,
+                        position_type TEXT,
+                        state TEXT,
+                        data TEXT,
+                        opened_at REAL,
+                        closed_at REAL,
+                        tags TEXT
                     )
                 ''')
                 
-                # Create indexes for better performance
+                # Add indexes for better query performance
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_warm_state_category ON warm_state(category)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_warm_state_timestamp ON warm_state(timestamp)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_cold_state_category ON cold_state(category)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_cold_state_timestamp ON cold_state(timestamp)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol)')
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_state ON positions(state)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_timestamp ON portfolio_snapshots(timestamp)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_opened_at ON positions(opened_at)')
                 
                 conn.commit()
                 
-            self.logger.info(LogCategory.SYSTEM, "Database initialized successfully")
-            
+            self._logger.info(LogCategory.SYSTEM, "State management database initialized", 
+                            db_path=self.db_path)
+                            
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to initialize database", 
-                            error=str(e), db_path=str(self.db_path))
+            self._logger.error(LogCategory.SYSTEM, "Failed to initialize database", error=str(e))
             raise
     
-    @contextmanager
-    def _get_connection(self):
-        """Get database connection with proper error handling"""
-        conn = None
-        try:
-            conn = sqlite3.connect(
-                str(self.db_path),
-                timeout=StateConstants.DEFAULT_CONNECTION_TIMEOUT,
-                check_same_thread=False
-            )
-            conn.execute('PRAGMA journal_mode=WAL')  # Better for concurrent access
-            conn.execute('PRAGMA synchronous=NORMAL')  # Good balance of safety and speed
-            yield conn
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            self.logger.error(LogCategory.SYSTEM, "Database connection error", error=str(e))
-            raise
-        finally:
-            if conn:
-                conn.close()
-    
     # =============================================================================
-    # HOT STATE METHODS (In-Memory)
+    # EXISTING STATE MANAGEMENT METHODS (Hot/Warm/Cold)
     # =============================================================================
     
-    def set_hot_state(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> None:
-        """Set hot state value with optional TTL"""
+    def set_hot_state(self, key: str, value: Any) -> None:
+        """Set hot state value (in-memory)"""
         with self._lock:
-            self._hot_state[key] = value
-            self._hot_state_timestamps[key] = datetime.now()
-            
-            # Set expiration if TTL provided
-            if ttl_seconds:
-                expires_at = datetime.now() + timedelta(seconds=ttl_seconds)
-                self._hot_state[f"_ttl_{key}"] = expires_at
-            
-            # Cleanup old entries if over limit
-            self._cleanup_hot_state()
+            self._hot_state[key] = {
+                'value': value,
+                'timestamp': datetime.now(),
+                'category': 'hot'
+            }
     
     def get_hot_state(self, key: str, default: Any = None) -> Any:
-        """Get hot state value with TTL check"""
+        """Get hot state value"""
         with self._lock:
-            # Check if key has TTL and is expired
-            ttl_key = f"_ttl_{key}"
-            if ttl_key in self._hot_state:
-                if datetime.now() > self._hot_state[ttl_key]:
-                    # Expired, remove both value and TTL
-                    self._hot_state.pop(key, None)
-                    self._hot_state.pop(ttl_key, None)
-                    self._hot_state_timestamps.pop(key, None)
-                    return default
-            
-            return self._hot_state.get(key, default)
-    
-    def delete_hot_state(self, key: str) -> bool:
-        """Delete hot state key"""
-        with self._lock:
-            deleted = key in self._hot_state
-            self._hot_state.pop(key, None)
-            self._hot_state_timestamps.pop(key, None)
-            self._hot_state.pop(f"_ttl_{key}", None)
-            return deleted
+            entry = self._hot_state.get(key)
+            return entry['value'] if entry else default
     
     def clear_hot_state(self) -> None:
         """Clear all hot state"""
         with self._lock:
             self._hot_state.clear()
-            self._hot_state_timestamps.clear()
     
-    def get_hot_state_keys(self) -> List[str]:
-        """Get all hot state keys (excluding TTL keys)"""
-        with self._lock:
-            return [k for k in self._hot_state.keys() if not k.startswith("_ttl_")]
-    
-    def _cleanup_hot_state(self) -> None:
-        """Clean up old hot state entries"""
-        if len(self._hot_state) <= self.max_hot_entries:
-            return
-        
-        # Sort by timestamp and keep only the most recent entries
-        sorted_keys = sorted(
-            self._hot_state_timestamps.items(),
-            key=lambda x: x[1]
-        )
-        
-        # Remove oldest entries
-        entries_to_remove = len(sorted_keys) - self.max_hot_entries
-        for key, _ in sorted_keys[:entries_to_remove]:
-            if not key.startswith("_ttl_"):  # Don't count TTL keys in cleanup
-                self._hot_state.pop(key, None)
-                self._hot_state_timestamps.pop(key, None)
-                self._hot_state.pop(f"_ttl_{key}", None)
-    
-    # =============================================================================
-    # WARM STATE METHODS (SQLite Session Data)
-    # =============================================================================
-    
-    def set_warm_state(self, key: str, value: Any, category: str = 'session', 
-                      expires_in_hours: Optional[int] = None) -> None:
-        """Set warm state value in SQLite"""
+    def set_warm_state(self, key: str, value: Any, category: str = 'session') -> None:
+        """Set warm state value (SQLite)"""
         try:
-            expires_at = None
-            if expires_in_hours:
-                expires_at = (datetime.now() + timedelta(hours=expires_in_hours)).timestamp()
-            
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT OR REPLACE INTO warm_state 
-                    (key, value, timestamp, category, expires_at)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (
-                    key, 
-                    json.dumps(value), 
-                    datetime.now().timestamp(), 
-                    category,
-                    expires_at
-                ))
+                    INSERT OR REPLACE INTO warm_state (key, value, timestamp, category)
+                    VALUES (?, ?, ?, ?)
+                ''', (key, json.dumps(value), datetime.now().timestamp(), category))
                 conn.commit()
-                
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to set warm state", 
-                            key=key, error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to set warm state", 
+                             key=key, error=str(e))
     
     def get_warm_state(self, key: str, default: Any = None) -> Any:
-        """Get warm state value from SQLite"""
+        """Get warm state value"""
         try:
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT value, expires_at FROM warm_state 
-                    WHERE key = ?
-                ''', (key,))
+                cursor.execute('SELECT value FROM warm_state WHERE key = ?', (key,))
                 result = cursor.fetchone()
-                
                 if result:
-                    value_json, expires_at = result
-                    
-                    # Check expiration
-                    if expires_at and datetime.now().timestamp() > expires_at:
-                        # Expired, delete and return default
-                        cursor.execute('DELETE FROM warm_state WHERE key = ?', (key,))
-                        conn.commit()
-                        return default
-                    
-                    return json.loads(value_json)
-                
+                    return json.loads(result[0])
                 return default
-                
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get warm state", 
-                            key=key, error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to get warm state", 
+                             key=key, error=str(e))
             return default
     
-    def delete_warm_state(self, key: str) -> bool:
-        """Delete warm state key"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM warm_state WHERE key = ?', (key,))
-                deleted = cursor.rowcount > 0
-                conn.commit()
-                return deleted
-                
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to delete warm state", 
-                            key=key, error=str(e))
-            return False
-    
-    def get_warm_state_by_category(self, category: str) -> Dict[str, Any]:
-        """Get all warm state entries for a category"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT key, value FROM warm_state 
-                    WHERE category = ? AND (expires_at IS NULL OR expires_at > ?)
-                    ORDER BY timestamp DESC
-                ''', (category, datetime.now().timestamp()))
-                
-                results = {}
-                for row in cursor.fetchall():
-                    key, value_json = row
-                    results[key] = json.loads(value_json)
-                
-                return results
-                
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get warm state by category", 
-                            category=category, error=str(e))
-            return {}
-    
-    # =============================================================================
-    # COLD STATE METHODS (Historical Data)
-    # =============================================================================
-    
-    def store_cold_state(self, data: Dict[str, Any], category: str, 
-                        tags: Optional[List[str]] = None, metadata: Dict[str, Any] = None) -> str:
+    def store_cold_state(self, data: Dict[str, Any], category: str, tags: List[str] = None) -> str:
         """Store cold state data (historical)"""
         record_id = str(uuid.uuid4())
+        tags_str = json.dumps(tags or [])
         
         try:
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO cold_state (id, data, timestamp, category, tags, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (
-                    record_id,
-                    json.dumps(data),
-                    datetime.now().timestamp(),
-                    category,
-                    json.dumps(tags or []),
-                    json.dumps(metadata or {})
-                ))
+                    INSERT INTO cold_state (id, data, timestamp, category, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (record_id, json.dumps(data), datetime.now().timestamp(), category, tags_str))
                 conn.commit()
             
             return record_id
-            
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to store cold state", 
-                            category=category, error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to store cold state", 
+                             category=category, error=str(e))
             raise
     
     def get_cold_state(self, category: str, limit: int = 100, 
-                      start_date: Optional[datetime] = None,
-                      end_date: Optional[datetime] = None,
-                      tags: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Get cold state data by category with filtering"""
+                       start_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Get cold state data by category"""
         try:
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                query = '''
-                    SELECT id, data, timestamp, tags, metadata 
-                    FROM cold_state 
-                    WHERE category = ?
-                '''
+                query = 'SELECT id, data, timestamp, tags FROM cold_state WHERE category = ?'
                 params = [category]
                 
                 if start_date:
                     query += ' AND timestamp >= ?'
-                    params.append(str(start_date.timestamp()))
-                
-                if end_date:
-                    query += ' AND timestamp <= ?'
-                    params.append(str(end_date.timestamp()))
+                    params.append(start_date.timestamp())
                 
                 query += ' ORDER BY timestamp DESC LIMIT ?'
-                params.append(str(limit))
+                params.append(limit)
                 
                 cursor.execute(query, params)
-                results = []
+                results = cursor.fetchall()
                 
-                for row in cursor.fetchall():
-                    record_id, data_json, timestamp, tags_json, metadata_json = row
-                    
-                    record_tags = json.loads(tags_json)
-                    
-                    # Filter by tags if specified
-                    if tags and not any(tag in record_tags for tag in tags):
-                        continue
-                    
-                    results.append({
-                        'id': record_id,
-                        'data': json.loads(data_json),
-                        'timestamp': datetime.fromtimestamp(timestamp),
-                        'tags': record_tags,
-                        'metadata': json.loads(metadata_json)
-                    })
-                
-                return results
-                
+                return [
+                    {
+                        'id': row[0],
+                        'data': json.loads(row[1]),
+                        'timestamp': datetime.fromtimestamp(row[2]),
+                        'tags': json.loads(row[3])
+                    }
+                    for row in results
+                ]
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get cold state", 
-                            category=category, error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to get cold state", 
+                             category=category, error=str(e))
             return []
     
-    def delete_cold_state(self, record_id: str) -> bool:
-        """Delete cold state record by ID"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM cold_state WHERE id = ?', (record_id,))
-                deleted = cursor.rowcount > 0
-                conn.commit()
-                return deleted
-                
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to delete cold state", 
-                            record_id=record_id, error=str(e))
-            return False
-    
-    # =============================================================================
-    # POSITION MANAGEMENT
-    # =============================================================================
-    
-    def store_position(self, position: Position) -> None:
+    def store_position(self, position) -> None:
         """Store position in database"""
         try:
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
-                # Prepare position data
-                position_data = {
-                    'quantity': position.quantity,
-                    'entry_price': position.entry_price,
-                    'current_price': position.current_price,
-                    'unrealized_pnl': position.unrealized_pnl,
-                    'realized_pnl': position.realized_pnl,
-                    'exit_price': position.exit_price,
-                    'exit_reason': position.exit_reason,
-                    'legs': [
-                        {
-                            'option_type': leg.option_type,
-                            'side': leg.side,
-                            'strike': leg.strike,
-                            'expiration': leg.expiration.isoformat(),
-                            'quantity': leg.quantity,
-                            'entry_price': leg.entry_price,
-                            'current_price': leg.current_price,
-                            'delta': leg.delta,
-                            'gamma': leg.gamma,
-                            'theta': leg.theta,
-                            'vega': leg.vega,
-                            'rho': leg.rho
-                        }
-                        for leg in position.legs
-                    ]
-                }
-                
                 cursor.execute('''
                     INSERT OR REPLACE INTO positions 
-                    (id, symbol, position_type, state, data, opened_at, closed_at, 
-                     tags, bot_name, automation_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, symbol, position_type, state, data, opened_at, closed_at, tags)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     position.id,
                     position.symbol,
-                    position.position_type,
-                    position.state,
-                    json.dumps(position_data),
+                    position.position_type.value,
+                    position.state.value,
+                    json.dumps({
+                        'quantity': position.quantity,
+                        'entry_price': position.entry_price,
+                        'current_price': position.current_price,
+                        'unrealized_pnl': position.unrealized_pnl,
+                        'realized_pnl': position.realized_pnl,
+                        'exit_price': position.exit_price,
+                        'legs': [
+                            {
+                                'option_type': leg.option_type.value,
+                                'side': leg.side.value,
+                                'strike': leg.strike,
+                                'expiration': leg.expiration.isoformat(),
+                                'quantity': leg.quantity,
+                                'entry_price': leg.entry_price,
+                                'current_price': leg.current_price,
+                                'delta': leg.delta,
+                                'gamma': leg.gamma,
+                                'theta': leg.theta,
+                                'vega': leg.vega
+                            }
+                            for leg in position.legs
+                        ]
+                    }),
                     position.opened_at.timestamp(),
                     position.closed_at.timestamp() if position.closed_at else None,
-                    json.dumps(position.tags),
-                    getattr(position, 'bot_name', None),
-                    position.automation_source
+                    json.dumps(position.tags)
                 ))
-                
                 conn.commit()
                 
-            self.logger.debug(LogCategory.SYSTEM, "Position stored", 
-                            position_id=position.id, symbol=position.symbol)
+            self._logger.info(LogCategory.SYSTEM, "Position stored", position_id=position.id)
             
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to store position", 
-                            position_id=position.id, error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to store position", 
+                             position_id=position.id, error=str(e))
             raise
     
-    def get_positions(self, state: Optional[str] = None, 
-                     symbol: Optional[str] = None,
-                     bot_name: Optional[str] = None,
-                     limit: int = 1000) -> List[Position]:
-        """Get positions from database with filtering"""
+    def get_positions(self, state: Optional[PositionState] = None, 
+                     symbol: Optional[str] = None) -> List:
+        """Get positions from database with optional filters"""
         try:
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
                 query = 'SELECT * FROM positions WHERE 1=1'
@@ -538,54 +285,30 @@ class StateManager:
                 
                 if state:
                     query += ' AND state = ?'
-                    params.append(state)
+                    params.append(state.value)
                 
                 if symbol:
                     query += ' AND symbol = ?'
                     params.append(symbol)
                 
-                if bot_name:
-                    query += ' AND bot_name = ?'
-                    params.append(bot_name)
-                
-                query += ' ORDER BY opened_at DESC LIMIT ?'
-                params.append(limit)
+                query += ' ORDER BY opened_at DESC'
                 
                 cursor.execute(query, params)
-                positions = []
+                results = cursor.fetchall()
                 
-                for row in cursor.fetchall():
-                    (pos_id, symbol, pos_type, state, data_json, opened_at, 
-                     closed_at, tags_json, bot_name, automation_name) = row
+                # Import here to avoid circular imports
+                from oa_framework_core import Position, OptionLeg
+                
+                positions = []
+                for row in results:
+                    data = json.loads(row[4])
                     
-                    data = json.loads(data_json)
-                    
-                    # Reconstruct position object
-                    if symbol is not None and state is not None:
-                        position = Position(
-                            id=pos_id,
-                            symbol=symbol,
-                            position_type=pos_type,
-                            state=state,
-                            opened_at=datetime.fromtimestamp(opened_at),
-                            quantity=data['quantity'],
-                            entry_price=data['entry_price'],
-                            current_price=data['current_price'],
-                            unrealized_pnl=data['unrealized_pnl'],
-                            realized_pnl=data['realized_pnl'],
-                            closed_at=datetime.fromtimestamp(closed_at) if closed_at else None,
-                            exit_price=data.get('exit_price'),
-                            exit_reason=data.get('exit_reason'),
-                            tags=json.loads(tags_json),
-                            automation_source=automation_name
-                        )
-                        
-                    # Reconstruct legs if present
+                    # Reconstruct legs
+                    legs = []
                     for leg_data in data.get('legs', []):
-                        from oa_data_structures import OptionLeg
                         leg = OptionLeg(
-                            option_type=leg_data['option_type'],
-                            side=leg_data['side'],
+                            option_type=QCOptionRight(leg_data['option_type']),
+                            side=OptionSide(leg_data['side']),
                             strike=leg_data['strike'],
                             expiration=datetime.fromisoformat(leg_data['expiration']),
                             quantity=leg_data['quantity'],
@@ -594,449 +317,806 @@ class StateManager:
                             delta=leg_data['delta'],
                             gamma=leg_data['gamma'],
                             theta=leg_data['theta'],
-                            vega=leg_data['vega'],
-                            rho=leg_data['rho']
+                            vega=leg_data['vega']
                         )
-                        position.add_leg(leg)
+                        legs.append(leg)
                     
+                    position = Position(
+                        id=row[0],
+                        symbol=row[1],
+                        position_type=PositionType(row[2]),
+                        state=PositionState(row[3]),
+                        opened_at=datetime.fromtimestamp(row[5]),
+                        quantity=data['quantity'],
+                        entry_price=data['entry_price'],
+                        current_price=data['current_price'],
+                        unrealized_pnl=data['unrealized_pnl'],
+                        realized_pnl=data['realized_pnl'],
+                        legs=legs,
+                        closed_at=datetime.fromtimestamp(row[6]) if row[6] else None,
+                        exit_price=data.get('exit_price'),
+                        tags=json.loads(row[7])
+                    )
                     positions.append(position)
                 
                 return positions
                 
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get positions", error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to get positions", error=str(e))
             return []
     
-    def get_position_by_id(self, position_id: str) -> Optional[Position]:
-        """Get specific position by ID"""
-        positions = self.get_positions()
-        for position in positions:
-            if position.id == position_id:
-                return position
-        return None
-    
     # =============================================================================
-    # TRADE RECORDING
+    # CSV EXPORT FUNCTIONALITY
     # =============================================================================
     
-    def record_trade(self, trade: TradeRecord) -> None:
-        """Record a trade in the database"""
+    def configure_s3_export(self, bucket_name: str, aws_access_key_id: str = None, 
+                           aws_secret_access_key: str = None, region_name: str = 'us-east-1'):
+        """
+        Configure S3 credentials for CSV export
+        
+        Args:
+            bucket_name: S3 bucket name
+            aws_access_key_id: AWS access key (optional if using IAM roles)
+            aws_secret_access_key: AWS secret key (optional if using IAM roles)
+            region_name: AWS region name
+        """
+        if not S3_AVAILABLE:
+            raise RuntimeError("boto3 library not available. Install with: pip install boto3")
+        
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR REPLACE INTO trades 
-                    (trade_id, timestamp, symbol, action, position_type, quantity, 
-                     price, fees, pnl, position_id, bot_name, automation_name, tags)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    trade.trade_id,
-                    trade.timestamp.timestamp(),
-                    trade.symbol,
-                    trade.action,
-                    trade.position_type,
-                    trade.quantity,
-                    trade.price,
-                    trade.fees,
-                    trade.pnl,
-                    trade.position_id,
-                    trade.bot_name,
-                    trade.automation_name,
-                    json.dumps(trade.tags)
-                ))
-                conn.commit()
-                
-            self.logger.debug(LogCategory.TRADE_EXECUTION, "Trade recorded", 
-                            trade_id=trade.trade_id, symbol=trade.symbol)
+            if aws_access_key_id and aws_secret_access_key:
+                self.s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=aws_access_key_id,
+                    aws_secret_access_key=aws_secret_access_key,
+                    region_name=region_name
+                )
+            else:
+                # Use default credentials (IAM role, ~/.aws/credentials, etc.)
+                self.s3_client = boto3.client('s3', region_name=region_name)
+            
+            self.s3_bucket = bucket_name
+            
+            self._logger.info(LogCategory.SYSTEM, "S3 configuration completed", 
+                            bucket=bucket_name, region=region_name)
             
         except Exception as e:
-            self.logger.error(LogCategory.TRADE_EXECUTION, "Failed to record trade", 
-                            trade_id=trade.trade_id, error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to configure S3", error=str(e))
             raise
     
-    def get_trades(self, symbol: Optional[str] = None, 
-                  bot_name: Optional[str] = None,
-                  start_date: Optional[datetime] = None,
-                  end_date: Optional[datetime] = None,
-                  limit: int = 1000) -> List[TradeRecord]:
-        """Get trades with filtering"""
+    def export_to_csv(self, export_dir: str = None, include_hot_state: bool = True) -> Dict[str, str]:
+        """
+        Export all SQLite data to CSV files
+        
+        Args:
+            export_dir: Directory to save CSV files (creates temp dir if None)
+            include_hot_state: Whether to include hot state in export
+            
+        Returns:
+            Dictionary mapping table names to CSV file paths
+        """
+        if export_dir is None:
+            export_dir = tempfile.mkdtemp(prefix="oa_export_")
+        
+        export_path = Path(export_dir)
+        export_path.mkdir(parents=True, exist_ok=True)
+        
+        exported_files = {}
+        
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                query = 'SELECT * FROM trades WHERE 1=1'
-                params = []
-                
-                if symbol is not None:
-                    query += ' AND symbol = ?'
-                    params.append(symbol)
-                
-                if bot_name:
-                    query += ' AND bot_name = ?'
-                    params.append(bot_name)
-                
-                if start_date:
-                    query += ' AND timestamp >= ?'
-                    params.append(start_date.timestamp())
-                
-                if end_date:
-                    query += ' AND timestamp <= ?'
-                    params.append(end_date.timestamp())
-                
-                query += ' ORDER BY timestamp DESC LIMIT ?'
-                params.append(limit)
-                
-                cursor.execute(query, params)
-                trades = []
-                
-                for row in cursor.fetchall():
-                    (trade_id, timestamp, symbol, action, position_type, quantity,
-                     price, fees, pnl, position_id, bot_name, automation_name, tags_json) = row
-                    
-                    if symbol is not None:
-                        trade = TradeRecord(
-                            trade_id=trade_id,
-                            timestamp=datetime.fromtimestamp(timestamp),
-                            symbol=symbol,
-                            action=action,
-                            position_type=position_type,
-                            quantity=quantity,
-                            price=price,
-                            fees=fees,
-                            pnl=pnl,
-                            position_id=position_id,
-                            bot_name=bot_name,
-                            automation_name=automation_name,
-                            tags=json.loads(tags_json)
-                        )
-                        trades.append(trade)
-                
-                return trades
-                
+            # Export warm state
+            warm_state_file = export_path / "warm_state.csv"
+            self._export_warm_state_to_csv(warm_state_file)
+            exported_files['warm_state'] = str(warm_state_file)
+            
+            # Export cold state  
+            cold_state_file = export_path / "cold_state.csv"
+            self._export_cold_state_to_csv(cold_state_file)
+            exported_files['cold_state'] = str(cold_state_file)
+            
+            # Export positions
+            positions_file = export_path / "positions.csv"
+            self._export_positions_to_csv(positions_file)
+            exported_files['positions'] = str(positions_file)
+            
+            # Export positions summary (flattened for analysis)
+            positions_summary_file = export_path / "positions_summary.csv"
+            self._export_positions_summary_to_csv(positions_summary_file)
+            exported_files['positions_summary'] = str(positions_summary_file)
+            
+            # Export hot state if requested
+            if include_hot_state:
+                hot_state_file = export_path / "hot_state.csv"
+                self._export_hot_state_to_csv(hot_state_file)
+                exported_files['hot_state'] = str(hot_state_file)
+            
+            # Create export manifest
+            manifest_file = export_path / "export_manifest.json"
+            self._create_export_manifest(manifest_file, exported_files)
+            exported_files['manifest'] = str(manifest_file)
+            
+            self._logger.info(LogCategory.SYSTEM, "CSV export completed", 
+                            export_dir=export_dir, files_count=len(exported_files))
+            
+            return exported_files
+            
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get trades", error=str(e))
-            return []
-    
-    # =============================================================================
-    # PORTFOLIO SNAPSHOTS
-    # =============================================================================
-    
-    def store_portfolio_snapshot(self, snapshot: PortfolioSnapshot) -> None:
-        """Store portfolio snapshot"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                additional_data = {
-                    'buying_power_used': getattr(snapshot, 'buying_power_used', 0)
-                }
-                
-                cursor.execute('''
-                    INSERT INTO portfolio_snapshots 
-                    (id, timestamp, total_value, cash_balance, positions_value, 
-                     open_positions, pnl_today, pnl_all_time, portfolio_delta, 
-                     portfolio_gamma, portfolio_theta, portfolio_vega, max_risk, additional_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    str(uuid.uuid4()),
-                    snapshot.timestamp.timestamp(),
-                    snapshot.total_value,
-                    snapshot.cash_balance,
-                    snapshot.positions_value,
-                    snapshot.open_positions,
-                    snapshot.total_pnl_today,
-                    snapshot.total_pnl_all_time,
-                    snapshot.portfolio_delta,
-                    snapshot.portfolio_gamma,
-                    snapshot.portfolio_theta,
-                    snapshot.portfolio_vega,
-                    snapshot.max_risk,
-                    json.dumps(additional_data)
-                ))
-                conn.commit()
-                
-        except Exception as e:
-            self.logger.error(LogCategory.PERFORMANCE, "Failed to store portfolio snapshot", 
-                            error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "CSV export failed", error=str(e))
             raise
     
-    def get_portfolio_snapshots(self, start_date: Optional[datetime] = None,
-                               end_date: Optional[datetime] = None,
-                               limit: int = 1000) -> List[PortfolioSnapshot]:
-        """Get portfolio snapshots with filtering"""
+    def _export_warm_state_to_csv(self, file_path: Path) -> None:
+        """Export warm state table to CSV"""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                query = 'SELECT * FROM portfolio_snapshots WHERE 1=1'
-                params = []
-                
-                if start_date:
-                    query += ' AND timestamp >= ?'
-                    params.append(start_date.timestamp())
-                
-                if end_date:
-                    query += ' AND timestamp <= ?'
-                    params.append(end_date.timestamp())
-                
-                query += ' ORDER BY timestamp DESC LIMIT ?'
-                params.append(limit)
-                
-                cursor.execute(query, params)
-                snapshots = []
-                
-                for row in cursor.fetchall():
-                    (snap_id, timestamp, total_value, cash_balance, positions_value,
-                     open_positions, pnl_today, pnl_all_time, portfolio_delta,
-                     portfolio_gamma, portfolio_theta, portfolio_vega, max_risk, additional_data_json) = row
+            if PANDAS_AVAILABLE:
+                # Use pandas for enhanced CSV export
+                with sqlite3.connect(self.db_path) as conn:
+                    df = pd.read_sql_query("SELECT * FROM warm_state ORDER BY timestamp DESC", conn)
                     
-                    additional_data = json.loads(additional_data_json)
+                    # Parse JSON values for better readability
+                    if not df.empty:
+                        df['value_parsed'] = df['value'].apply(lambda x: self._safe_json_loads(x))
+                        df['timestamp_readable'] = pd.to_datetime(df['timestamp'], unit='s')
                     
-                    snapshot = PortfolioSnapshot(
-                        timestamp=datetime.fromtimestamp(timestamp),
-                        total_value=total_value,
-                        cash_balance=cash_balance,
-                        positions_value=positions_value,
-                        open_positions=open_positions,
-                        total_pnl_today=pnl_today,
-                        total_pnl_all_time=pnl_all_time,
-                        portfolio_delta=portfolio_delta,
-                        portfolio_gamma=portfolio_gamma,
-                        portfolio_theta=portfolio_theta,
-                        portfolio_vega=portfolio_vega,
-                        max_risk=max_risk,
-                        buying_power_used=additional_data.get('buying_power_used', 0)
-                    )
-                    snapshots.append(snapshot)
-                
-                return snapshots
+                    df.to_csv(file_path, index=False)
+            else:
+                # Fallback to manual CSV export
+                self._export_table_to_csv_manual("warm_state", file_path, 
+                    ['key', 'value', 'timestamp', 'category'])
                 
         except Exception as e:
-            self.logger.error(LogCategory.PERFORMANCE, "Failed to get portfolio snapshots", 
-                            error=str(e))
-            return []
+            self._logger.error(LogCategory.SYSTEM, "Failed to export warm state", error=str(e))
+            # Create empty CSV with headers
+            self._create_empty_csv(file_path, ['key', 'value', 'timestamp', 'category'])
+    
+    def _export_cold_state_to_csv(self, file_path: Path) -> None:
+        """Export cold state table to CSV"""
+        try:
+            if PANDAS_AVAILABLE:
+                # Use pandas for enhanced CSV export
+                with sqlite3.connect(self.db_path) as conn:
+                    df = pd.read_sql_query("SELECT * FROM cold_state ORDER BY timestamp DESC", conn)
+                    
+                    # Parse JSON data and tags for better readability
+                    if not df.empty:
+                        df['data_parsed'] = df['data'].apply(lambda x: self._safe_json_loads(x))
+                        df['tags_parsed'] = df['tags'].apply(lambda x: self._safe_json_loads(x))
+                        df['timestamp_readable'] = pd.to_datetime(df['timestamp'], unit='s')
+                    
+                    df.to_csv(file_path, index=False)
+            else:
+                # Fallback to manual CSV export
+                self._export_table_to_csv_manual("cold_state", file_path,
+                    ['id', 'data', 'timestamp', 'category', 'tags'])
+                
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to export cold state", error=str(e))
+            # Create empty CSV with headers
+            self._create_empty_csv(file_path, ['id', 'data', 'timestamp', 'category', 'tags'])
+    
+    def _export_positions_to_csv(self, file_path: Path) -> None:
+        """Export positions table to CSV (raw format)"""
+        try:
+            if PANDAS_AVAILABLE:
+                # Use pandas for enhanced CSV export
+                with sqlite3.connect(self.db_path) as conn:
+                    df = pd.read_sql_query("SELECT * FROM positions ORDER BY opened_at DESC", conn)
+                    
+                    # Add readable timestamps
+                    if not df.empty:
+                        df['opened_at_readable'] = pd.to_datetime(df['opened_at'], unit='s')
+                        df['closed_at_readable'] = pd.to_datetime(df['closed_at'], unit='s', errors='coerce')
+                        df['tags_parsed'] = df['tags'].apply(lambda x: self._safe_json_loads(x))
+                    
+                    df.to_csv(file_path, index=False)
+            else:
+                # Fallback to manual CSV export
+                self._export_table_to_csv_manual("positions", file_path,
+                    ['id', 'symbol', 'position_type', 'state', 'data', 'opened_at', 'closed_at', 'tags'])
+                
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to export positions", error=str(e))
+            # Create empty CSV with headers
+            self._create_empty_csv(file_path, ['id', 'symbol', 'position_type', 'state', 'data', 
+                                'opened_at', 'closed_at', 'tags'])
+    
+    def _export_positions_summary_to_csv(self, file_path: Path) -> None:
+        """Export flattened positions data for analysis"""
+        try:
+            positions = self.get_positions()
+            
+            if not positions:
+                # Create empty CSV with headers
+                self._create_empty_csv(file_path, [
+                    'position_id', 'symbol', 'position_type', 'state', 'quantity',
+                    'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
+                    'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
+                    'leg_count', 'leg_details'
+                ])
+                return
+            
+            summary_data = []
+            
+            for position in positions:
+                # Flatten leg data
+                leg_details = []
+                for leg in position.legs:
+                    leg_details.append({
+                        'type': leg.option_type.value,
+                        'side': leg.side.value,
+                        'strike': leg.strike,
+                        'expiration': leg.expiration.isoformat(),
+                        'delta': leg.delta,
+                        'entry_price': leg.entry_price,
+                        'current_price': leg.current_price
+                    })
+                
+                summary_data.append({
+                    'position_id': position.id,
+                    'symbol': position.symbol,
+                    'position_type': position.position_type.value,
+                    'state': position.state.value,
+                    'quantity': position.quantity,
+                    'entry_price': position.entry_price,
+                    'current_price': position.current_price,
+                    'exit_price': position.exit_price,
+                    'unrealized_pnl': position.unrealized_pnl,
+                    'realized_pnl': position.realized_pnl,
+                    'total_pnl': position.total_pnl,
+                    'opened_at': position.opened_at.isoformat(),
+                    'closed_at': position.closed_at.isoformat() if position.closed_at else None,
+                    'days_open': position.days_open,
+                    'tags': json.dumps(position.tags),
+                    'leg_count': len(position.legs),
+                    'leg_details': json.dumps(leg_details)
+                })
+            
+            if PANDAS_AVAILABLE:
+                df = pd.DataFrame(summary_data)
+                df.to_csv(file_path, index=False)
+            else:
+                # Manual CSV writing
+                with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                    if summary_data:
+                        writer = csv.DictWriter(f, fieldnames=summary_data[0].keys())
+                        writer.writeheader()
+                        writer.writerows(summary_data)
+            
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to export positions summary", error=str(e))
+            # Create empty CSV with headers
+            self._create_empty_csv(file_path, [
+                'position_id', 'symbol', 'position_type', 'state', 'quantity',
+                'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
+                'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
+                'leg_count', 'leg_details'
+            ])
+    
+    def _export_hot_state_to_csv(self, file_path: Path) -> None:
+        """Export hot state to CSV"""
+        try:
+            with self._lock:
+                hot_state_data = []
+                for key, entry in self._hot_state.items():
+                    hot_state_data.append({
+                        'key': key,
+                        'value': json.dumps(entry['value']),
+                        'timestamp': entry['timestamp'].timestamp(),
+                        'timestamp_readable': entry['timestamp'].isoformat(),
+                        'category': entry['category']
+                    })
+                
+                if PANDAS_AVAILABLE and hot_state_data:
+                    df = pd.DataFrame(hot_state_data)
+                    df.to_csv(file_path, index=False)
+                else:
+                    # Manual CSV writing
+                    with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=['key', 'value', 'timestamp', 'timestamp_readable', 'category'])
+                        writer.writeheader()
+                        if hot_state_data:
+                            writer.writerows(hot_state_data)
+                
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to export hot state", error=str(e))
+            # Create empty CSV with headers
+            self._create_empty_csv(file_path, ['key', 'value', 'timestamp', 'timestamp_readable', 'category'])
+    
+    def _export_table_to_csv_manual(self, table_name: str, file_path: Path, columns: List[str]) -> None:
+        """Manual CSV export fallback when pandas is not available"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT * FROM {table_name} ORDER BY timestamp DESC")
+                rows = cursor.fetchall()
+                
+                with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(columns)
+                    writer.writerows(rows)
+                    
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, f"Failed to manually export {table_name}", error=str(e))
+            self._create_empty_csv(file_path, columns)
+    
+    def _create_empty_csv(self, file_path: Path, columns: List[str]) -> None:
+        """Create empty CSV file with headers"""
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to create empty CSV", error=str(e))
+                    'position_type': position.position_type.value,
+                    'state': position.state.value,
+                    'quantity': position.quantity,
+                    'entry_price': position.entry_price,
+                    'current_price': position.current_price,
+                    'exit_price': position.exit_price,
+                    'unrealized_pnl': position.unrealized_pnl,
+                    'realized_pnl': position.realized_pnl,
+                    'total_pnl': position.total_pnl,
+                    'opened_at': position.opened_at.isoformat(),
+                    'closed_at': position.closed_at.isoformat() if position.closed_at else None,
+                    'days_open': position.days_open,
+                    'tags': json.dumps(position.tags),
+                    'leg_count': len(position.legs),
+                    'leg_details': json.dumps(leg_details)
+                })
+            
+            df = pd.DataFrame(summary_data)
+            df.to_csv(file_path, index=False)
+            
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to export positions summary", error=str(e))
+            # Create empty CSV with headers
+            pd.DataFrame(columns=[
+                'position_id', 'symbol', 'position_type', 'state', 'quantity',
+                'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
+                'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
+                'leg_count', 'leg_details'
+            ]).to_csv(file_path, index=False)
+    
+    def _export_hot_state_to_csv(self, file_path: Path) -> None:
+        """Export hot state to CSV"""
+        try:
+            with self._lock:
+                hot_state_data = []
+                for key, entry in self._hot_state.items():
+                    hot_state_data.append({
+                        'key': key,
+                        'value': json.dumps(entry['value']),
+                        'timestamp': entry['timestamp'].timestamp(),
+                        'timestamp_readable': entry['timestamp'].isoformat(),
+                        'category': entry['category']
+                    })
+                
+                df = pd.DataFrame(hot_state_data)
+                df.to_csv(file_path, index=False)
+                
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Failed to export hot state", error=str(e))
+            # Create empty CSV with headers
+            pd.DataFrame(columns=['key', 'value', 'timestamp', 'timestamp_readable', 'category']).to_csv(file_path, index=False)
+    
+    def _create_export_manifest(self, file_path: Path, exported_files: Dict[str, str]) -> None:
+        """Create export manifest with metadata"""
+        manifest = {
+            'export_timestamp': datetime.now().isoformat(),
+            'export_type': 'sqlite_to_csv',
+            'framework_version': FrameworkConstants.VERSION,
+            'database_path': self.db_path,
+            'exported_files': exported_files,
+            'file_info': {}
+        }
+        
+        # Add file size information
+        for table_name, file_path_str in exported_files.items():
+            if table_name != 'manifest':  # Don't include self
+                try:
+                    file_size = os.path.getsize(file_path_str)
+                    manifest['file_info'][table_name] = {
+                        'file_size_bytes': file_size,
+                        'file_path': file_path_str
+                    }
+                except Exception:
+                    pass
+        
+        with open(file_path, 'w') as f:
+            json.dump(manifest, f, indent=2)
+    
+    def upload_to_s3(self, local_files: Dict[str, str], s3_prefix: str = None) -> Dict[str, str]:
+        """
+        Upload CSV files to S3
+        
+        Args:
+            local_files: Dictionary of table_name -> local_file_path
+            s3_prefix: S3 key prefix (folder structure)
+            
+        Returns:
+            Dictionary mapping table names to S3 URLs
+        """
+        if not self.s3_client or not self.s3_bucket:
+            raise RuntimeError("S3 not configured. Call configure_s3_export() first.")
+        
+        if s3_prefix is None:
+            s3_prefix = f"oa_framework_exports/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+        
+        uploaded_files = {}
+        
+        try:
+            for table_name, local_file_path in local_files.items():
+                if not os.path.exists(local_file_path):
+                    self._logger.warning(LogCategory.SYSTEM, "File not found for upload", 
+                                       file=local_file_path)
+                    continue
+                
+                # Create S3 key
+                file_name = os.path.basename(local_file_path)
+                s3_key = f"{s3_prefix}/{file_name}"
+                
+                # Upload file
+                self.s3_client.upload_file(local_file_path, self.s3_bucket, s3_key)
+                
+                # Generate S3 URL
+                s3_url = f"s3://{self.s3_bucket}/{s3_key}"
+                uploaded_files[table_name] = s3_url
+                
+                self._logger.info(LogCategory.SYSTEM, "File uploaded to S3", 
+                                table=table_name, s3_url=s3_url)
+            
+            return uploaded_files
+            
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "S3 upload failed", error=str(e))
+            raise
+    
+    def export_and_upload_to_s3(self, s3_prefix: str = None, cleanup_local: bool = True) -> Dict[str, str]:
+        """
+        Complete workflow: Export SQLite to CSV and upload to S3
+        
+        Args:
+            s3_prefix: S3 key prefix
+            cleanup_local: Whether to delete local CSV files after upload
+            
+        Returns:
+            Dictionary mapping table names to S3 URLs
+        """
+        try:
+            # Export to temporary directory
+            with tempfile.TemporaryDirectory(prefix="oa_s3_export_") as temp_dir:
+                # Export to CSV
+                exported_files = self.export_to_csv(temp_dir, include_hot_state=True)
+                
+                # Upload to S3
+                s3_urls = self.upload_to_s3(exported_files, s3_prefix)
+                
+                self._logger.info(LogCategory.SYSTEM, "Export and S3 upload completed", 
+                                files_count=len(s3_urls))
+                
+                return s3_urls
+                
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Export and S3 upload failed", error=str(e))
+            raise
+    
+    def create_compressed_export(self, export_dir: str = None) -> str:
+        """
+        Create a compressed ZIP file containing all exported CSV files
+        
+        Args:
+            export_dir: Directory to save files (creates temp dir if None)
+            
+        Returns:
+            Path to the created ZIP file
+        """
+        if export_dir is None:
+            export_dir = tempfile.mkdtemp(prefix="oa_compressed_export_")
+        
+        export_path = Path(export_dir)
+        export_path.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Export CSV files
+            exported_files = self.export_to_csv(export_dir, include_hot_state=True)
+            
+            # Create ZIP file
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            zip_filename = f"oa_framework_export_{timestamp}.zip"
+            zip_path = export_path / zip_filename
+            
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for table_name, file_path in exported_files.items():
+                    if os.path.exists(file_path):
+                        # Add file to ZIP with just the filename (no directory structure)
+                        zipf.write(file_path, os.path.basename(file_path))
+            
+            self._logger.info(LogCategory.SYSTEM, "Compressed export created", 
+                            zip_file=str(zip_path))
+            
+            return str(zip_path)
+            
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Compressed export failed", error=str(e))
+            raise
     
     # =============================================================================
-    # MAINTENANCE AND UTILITIES
+    # UTILITY METHODS
     # =============================================================================
     
-    def vacuum_database(self) -> None:
-        """Vacuum database to reclaim space and optimize performance"""
+    def _safe_json_loads(self, json_str: str) -> Any:
+        """Safely parse JSON string, return original string if parsing fails"""
         try:
-            with self._get_connection() as conn:
-                conn.execute('VACUUM')
-                conn.commit()
-            
-            self._last_vacuum = datetime.now()
-            self.logger.info(LogCategory.SYSTEM, "Database vacuumed successfully")
-            
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to vacuum database", error=str(e))
-    
-    def cleanup_expired_entries(self) -> None:
-        """Clean up expired entries from all tables"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Clean up expired warm state entries
-                cursor.execute('''
-                    DELETE FROM warm_state 
-                    WHERE expires_at IS NOT NULL AND expires_at < ?
-                ''', (datetime.now().timestamp(),))
-                
-                warm_deleted = cursor.rowcount
-                
-                # Clean up old cold state entries (older than 1 year by default)
-                one_year_ago = datetime.now() - timedelta(days=365)
-                cursor.execute('''
-                    DELETE FROM cold_state 
-                    WHERE timestamp < ? AND category != 'permanent'
-                ''', (one_year_ago.timestamp(),))
-                
-                cold_deleted = cursor.rowcount
-                
-                # Clean up old portfolio snapshots (keep only last 10,000)
-                cursor.execute('''
-                    DELETE FROM portfolio_snapshots 
-                    WHERE id NOT IN (
-                        SELECT id FROM portfolio_snapshots 
-                        ORDER BY timestamp DESC LIMIT 10000
-                    )
-                ''')
-                
-                snapshots_deleted = cursor.rowcount
-                
-                conn.commit()
-                
-                self.logger.info(LogCategory.SYSTEM, "Cleanup completed", 
-                               warm_deleted=warm_deleted, cold_deleted=cold_deleted,
-                               snapshots_deleted=snapshots_deleted)
-                
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to cleanup expired entries", 
-                            error=str(e))
+            return json.loads(json_str)
+        except (json.JSONDecodeError, TypeError):
+            return json_str
     
     def get_database_stats(self) -> Dict[str, Any]:
-        """Get database statistics"""
+        """Get statistics about the SQLite database"""
         try:
-            with self._get_connection() as conn:
+            with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
                 stats = {}
                 
                 # Count records in each table
-                tables = ['warm_state', 'cold_state', 'positions', 'trades', 'portfolio_snapshots']
-                for table in tables:
-                    cursor.execute(f'SELECT COUNT(*) FROM {table}')
-                    stats[f'{table}_count'] = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM warm_state")
+                stats['warm_state_count'] = cursor.fetchone()[0]
                 
-                # Database file size
-                stats['database_size_mb'] = self.db_path.stat().st_size / (1024 * 1024)
+                cursor.execute("SELECT COUNT(*) FROM cold_state")
+                stats['cold_state_count'] = cursor.fetchone()[0]
                 
-                # Hot state statistics
+                cursor.execute("SELECT COUNT(*) FROM positions")
+                stats['positions_count'] = cursor.fetchone()[0]
+                
+                # Get database file size
+                stats['database_size_bytes'] = os.path.getsize(self.db_path)
+                stats['database_path'] = self.db_path
+                
+                # Get hot state count
                 with self._lock:
                     stats['hot_state_count'] = len(self._hot_state)
-                    stats['hot_state_memory_mb'] = len(str(self._hot_state)) / (1024 * 1024)
+                
+                # Get date ranges
+                cursor.execute("SELECT MIN(timestamp), MAX(timestamp) FROM cold_state")
+                cold_range = cursor.fetchone()
+                if cold_range[0] and cold_range[1]:
+                    stats['cold_state_date_range'] = {
+                        'earliest': datetime.fromtimestamp(cold_range[0]).isoformat(),
+                        'latest': datetime.fromtimestamp(cold_range[1]).isoformat()
+                    }
+                
+                cursor.execute("SELECT MIN(opened_at), MAX(opened_at) FROM positions")
+                pos_range = cursor.fetchone()
+                if pos_range[0] and pos_range[1]:
+                    stats['positions_date_range'] = {
+                        'earliest': datetime.fromtimestamp(pos_range[0]).isoformat(),
+                        'latest': datetime.fromtimestamp(pos_range[1]).isoformat()
+                    }
                 
                 return stats
                 
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get database stats", 
-                            error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Failed to get database stats", error=str(e))
             return {}
     
-    def close(self) -> None:
-        """Close state manager and clean up resources"""
+    def cleanup_old_data(self, days_to_keep: int = 90) -> Dict[str, int]:
+        """
+        Clean up old data from the database
+        
+        Args:
+            days_to_keep: Number of days to keep (default 90)
+            
+        Returns:
+            Dictionary with count of deleted records per table
+        """
+        cutoff_timestamp = (datetime.now() - timedelta(days=days_to_keep)).timestamp()
+        deleted_counts = {}
+        
         try:
-            # Check if vacuum is needed
-            if datetime.now() - self._last_vacuum > timedelta(hours=StateConstants.VACUUM_INTERVAL_HOURS):
-                self.vacuum_database()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Clean up old cold state records
+                cursor.execute("DELETE FROM cold_state WHERE timestamp < ?", (cutoff_timestamp,))
+                deleted_counts['cold_state'] = cursor.rowcount
+                
+                # Clean up old warm state records (keep more recent ones)
+                warm_cutoff = (datetime.now() - timedelta(days=30)).timestamp()
+                cursor.execute("DELETE FROM warm_state WHERE timestamp < ?", (warm_cutoff,))
+                deleted_counts['warm_state'] = cursor.rowcount
+                
+                # Clean up closed positions older than retention period
+                cursor.execute("""
+                    DELETE FROM positions 
+                    WHERE state = 'closed' AND closed_at < ?
+                """, (cutoff_timestamp,))
+                deleted_counts['positions'] = cursor.rowcount
+                
+                conn.commit()
+                
+                self._logger.info(LogCategory.SYSTEM, "Database cleanup completed", 
+                                deleted_counts=deleted_counts)
+                
+                return deleted_counts
+                
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Database cleanup failed", error=str(e))
+            return {}
+    
+    def backup_database(self, backup_path: str) -> bool:
+        """
+        Create a backup of the SQLite database
+        
+        Args:
+            backup_path: Path for the backup file
             
-            # Clean up expired entries
-            self.cleanup_expired_entries()
+        Returns:
+            True if backup successful, False otherwise
+        """
+        try:
+            # Create backup directory if it doesn't exist
+            backup_dir = os.path.dirname(backup_path)
+            if backup_dir:
+                os.makedirs(backup_dir, exist_ok=True)
             
-            # Clear hot state
-            self.clear_hot_state()
+            # Create backup using SQLite's backup API
+            with sqlite3.connect(self.db_path) as source:
+                with sqlite3.connect(backup_path) as backup:
+                    source.backup(backup)
             
-            self.logger.info(LogCategory.SYSTEM, "State manager closed successfully")
+            self._logger.info(LogCategory.SYSTEM, "Database backup created", 
+                            backup_path=backup_path)
+            return True
             
         except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Error closing state manager", error=str(e))
+            self._logger.error(LogCategory.SYSTEM, "Database backup failed", 
+                             backup_path=backup_path, error=str(e))
+            return False
+    
+    def vacuum_database(self) -> bool:
+        """
+        Vacuum the SQLite database to reclaim space and optimize performance
+        
+        Returns:
+            True if vacuum successful, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("VACUUM")
+                conn.commit()
+            
+            self._logger.info(LogCategory.SYSTEM, "Database vacuum completed")
+            return True
+            
+        except Exception as e:
+            self._logger.error(LogCategory.SYSTEM, "Database vacuum failed", error=str(e))
+            return False
+
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# CONVENIENCE FUNCTIONS AND FACTORY METHODS
 # =============================================================================
 
-def create_memory_state_manager() -> StateManager:
-    """Create a state manager that uses in-memory database"""
-    return StateManager(":memory:")
+def create_state_manager(db_path: str = None) -> StateManager:
+    """
+    Factory function to create a StateManager instance
+    
+    Args:
+        db_path: Path to SQLite database file
+        
+    Returns:
+        StateManager instance
+    """
+    if db_path is None:
+        db_path = FrameworkConstants.DEFAULT_DATABASE_FILE
+    
+    return StateManager(db_path)
 
-def create_test_state_manager() -> StateManager:
-    """Create a state manager for testing with temporary database"""
-    import tempfile
-    db_file = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
-    return StateManager(db_file.name)
+def create_state_manager_with_s3(db_path: str = None, s3_bucket: str = None, 
+                                 aws_access_key: str = None, aws_secret_key: str = None) -> StateManager:
+    """
+    Factory function to create a StateManager with S3 configuration
+    
+    Args:
+        db_path: Path to SQLite database file
+        s3_bucket: S3 bucket name for exports
+        aws_access_key: AWS access key ID
+        aws_secret_key: AWS secret access key
+        
+    Returns:
+        StateManager instance configured for S3 uploads
+    """
+    state_manager = create_state_manager(db_path)
+    
+    if s3_bucket:
+        state_manager.configure_s3_export(
+            bucket_name=s3_bucket,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key
+        )
+    
+    return state_manager
+
 
 # =============================================================================
-# DEMONSTRATION
+# EXAMPLE USAGE AND TESTING
 # =============================================================================
 
-def demonstrate_state_management():
-    """Demonstrate state management capabilities"""
-    print("Option Alpha Framework - State Management Demo")
+def demonstrate_csv_export():
+    """Demonstrate CSV export functionality"""
+    
+    print("=" * 60)
+    print("StateManager CSV Export Demonstration")
     print("=" * 60)
     
-    # Create test state manager
-    state_manager = create_test_state_manager()
-    
     try:
-        # Test hot state
-        print("Testing Hot State (In-Memory):")
-        state_manager.set_hot_state("current_price", {"SPY": 450.25, "QQQ": 380.15})
-        state_manager.set_hot_state("temp_data", "expires_soon", ttl_seconds=2)
+        # Create state manager
+        state_manager = create_state_manager("demo_state.db")
         
-        price_data = state_manager.get_hot_state("current_price")
-        print(f"  ✓ Hot state retrieved: {price_data}")
+        # Add some test data
+        print("\n1. Adding test data...")
         
-        import time
-        time.sleep(3)  # Wait for TTL expiration
-        expired_data = state_manager.get_hot_state("temp_data", "DEFAULT")
-        print(f"  ✓ TTL working: {expired_data}")
+        # Hot state
+        state_manager.set_hot_state("current_price_SPY", 450.25)
+        state_manager.set_hot_state("market_regime", "bull_market")
         
-        # Test warm state
-        print("\nTesting Warm State (SQLite Session):")
-        session_data = {"bot_name": "TestBot", "started_at": datetime.now().isoformat()}
-        state_manager.set_warm_state("session_info", session_data, "bot_session")
+        # Warm state
+        state_manager.set_warm_state("daily_pnl", {"total": 1250.50, "trades": 5})
+        state_manager.set_warm_state("bot_status", {"active": True, "last_scan": datetime.now().isoformat()})
         
-        retrieved_session = state_manager.get_warm_state("session_info")
-        print(f"  ✓ Warm state retrieved: {retrieved_session['bot_name']}")
+        # Cold state
+        trade_data = {
+            "symbol": "SPY",
+            "strategy": "iron_condor",
+            "entry_price": 2.50,
+            "exit_price": 1.25,
+            "pnl": 125.0
+        }
+        state_manager.store_cold_state(trade_data, "completed_trades", ["profitable", "spy"])
         
-        # Test cold state
-        print("\nTesting Cold State (Historical Data):")
-        trade_data = {"symbol": "SPY", "action": "BUY", "quantity": 100, "pnl": 150.0}
-        record_id = state_manager.store_cold_state(trade_data, "completed_trades", 
-                                                 ["profitable", "spy"])
-        print(f"  ✓ Cold state stored: {record_id}")
+        print("✓ Test data added successfully")
         
-        historical_trades = state_manager.get_cold_state("completed_trades", limit=5)
-        print(f"  ✓ Retrieved {len(historical_trades)} historical records")
-        
-        # Test position storage
-        print("\nTesting Position Storage:")
-        from oa_data_structures import create_test_position
-        position = create_test_position("SPY", "long_call")
-        state_manager.store_position(position)
-        
-        retrieved_positions = state_manager.get_positions(symbol="SPY")
-        print(f"  ✓ Position stored and retrieved: {len(retrieved_positions)} positions")
-        
-        # Test trade recording
-        print("\nTesting Trade Recording:")
-        from oa_data_structures import TradeRecord
-        trade = TradeRecord(
-            trade_id="T001",
-            timestamp=datetime.now(),
-            symbol="SPY",
-            action="OPEN",
-            position_type="long_call",
-            quantity=1,
-            price=450.0,
-            pnl=25.0
-        )
-        state_manager.record_trade(trade)
-        
-        trades = state_manager.get_trades(symbol="SPY")
-        print(f"  ✓ Trade recorded: {len(trades)} trades found")
-        
-        # Test portfolio snapshots
-        print("\nTesting Portfolio Snapshots:")
-        from oa_data_structures import PortfolioSnapshot
-        snapshot = PortfolioSnapshot(
-            timestamp=datetime.now(),
-            total_value=50000.0,
-            cash_balance=45000.0,
-            positions_value=5000.0,
-            open_positions=1,
-            total_pnl_today=150.0,
-            total_pnl_all_time=2500.0
-        )
-        state_manager.store_portfolio_snapshot(snapshot)
-        
-        snapshots = state_manager.get_portfolio_snapshots(limit=5)
-        print(f"  ✓ Portfolio snapshot stored: {len(snapshots)} snapshots")
-        
-        # Test database statistics
-        print("\nDatabase Statistics:")
+        # Get database statistics
+        print("\n2. Database Statistics:")
         stats = state_manager.get_database_stats()
         for key, value in stats.items():
-            print(f"  {key}: {value}")
+            print(f"   {key}: {value}")
+        
+        # Export to CSV
+        print("\n3. Exporting to CSV...")
+        export_dir = "csv_export_demo"
+        exported_files = state_manager.export_to_csv(export_dir, include_hot_state=True)
+        
+        print("✓ CSV export completed")
+        print("   Exported files:")
+        for table_name, file_path in exported_files.items():
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            print(f"     {table_name}: {file_path} ({file_size} bytes)")
+        
+        # Create compressed export
+        print("\n4. Creating compressed export...")
+        zip_file = state_manager.create_compressed_export("compressed_export_demo")
+        zip_size = os.path.getsize(zip_file)
+        print(f"✓ Compressed export created: {zip_file} ({zip_size} bytes)")
+        
+        # Demonstrate S3 configuration (without actual upload)
+        print("\n5. S3 Configuration Demo...")
+        print("   To configure S3:")
+        print("   state_manager.configure_s3_export('my-bucket', 'access-key', 'secret-key')")
+        print("   s3_urls = state_manager.export_and_upload_to_s3()")
         
         print("\n" + "=" * 60)
-        print("✅ State management demonstration completed successfully!")
+        print("CSV Export Demo Complete ✓")
+        print("✓ SQLite performance for backtesting")
+        print("✓ CSV export for S3 uploads and analysis")
+        print("✓ Compressed exports for efficient storage")
+        print("=" * 60)
         
-    finally:
-        state_manager.close()
+    except Exception as e:
+        print(f"✗ Demo failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__ == "__main__":
-    demonstrate_state_management()
+    demonstrate_csv_export()

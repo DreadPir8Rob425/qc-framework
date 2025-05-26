@@ -1,0 +1,27 @@
+# Option Alpha Framework Requirements
+# Core framework requirements
+
+# Required dependencies
+jsonschema>=4.0.0
+
+# Optional dependencies for enhanced functionality
+# CSV Export with pandas (recommended)
+pandas>=1.5.0
+
+# S3 Export functionality
+boto3>=1.26.0
+
+# QuantConnect integration (when using QuantConnect platform)
+# These are provided by QuantConnect environment, but listed for reference
+# numpy>=1.21.0
+# scipy>=1.7.0
+
+# Development and testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Note: Install with specific feature sets:
+# Basic framework only:    pip install jsonschema
+# With CSV export:         pip install jsonschema pandas
+# With S3 export:          pip install jsonschema pandas boto3
+# Full functionality:      pip install -r requirements.txt
