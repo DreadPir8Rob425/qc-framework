@@ -1,652 +1,867 @@
-# Option Alpha Bot Framework - Main Integration Module
-# Brings together all components for a complete OA bot framework
+# Option Alpha Bot Framework - Complete Implementation
+# This is the complete framework file - will be broken into smaller modules
 
-import logging
+import sqlite3
 import json
+import logging
+import threading
+import queue
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Callable, Union
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+import uuid
 import tempfile
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-from pathlib import Path
+import os
 
-# Import all framework components
-from oa_constants import FrameworkConstants, SystemDefaults
-from oa_enums import *
-from oa_json_schema import OABotConfigLoader, BotConfiguration
-from oa_config_generator import OABotConfigGenerator
-from csv_state_manager import CSVStateManager
+# =============================================================================
+# CORE DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class MarketData:
+    """Basic market data structure"""
+    symbol: str
+    timestamp: datetime
+    price: float
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    volume: Optional[int] = None
+    iv_rank: Optional[float] = None
+    
+    def __post_init__(self):
+        if self.price <= 0:
+            raise ValueError(f"Invalid price for {self.symbol}: {self.price}")
+        if self.bid and self.ask and self.bid > self.ask:
+            raise ValueError(f"Bid ({self.bid}) > Ask ({self.ask}) for {self.symbol}")
+
+@dataclass
+class Position:
+    """Represents a trading position"""
+    id: str
+    symbol: str
+    position_type: str  # Using string for simplicity in Phase 0
+    state: str
+    opened_at: datetime
+    quantity: int
+    entry_price: float
+    current_price: float = 0.0
+    unrealized_pnl: float = 0.0
+    realized_pnl: float = 0.0
+    tags: List[str] = field(default_factory=list)
+    closed_at: Optional[datetime] = None
+    exit_price: Optional[float] = None
+    
+    def __post_init__(self):
+        if not self.id:
+            self.id = str(uuid.uuid4())
+    
+    @property
+    def days_open(self) -> int:
+        end_date = self.closed_at if self.closed_at else datetime.now()
+        return (end_date - self.opened_at).days
+    
+    @property
+    def total_pnl(self) -> float:
+        return self.realized_pnl + self.unrealized_pnl
+
+@dataclass
+class Event:
+    """Base event class for the event-driven system"""
+    event_type: str
+    timestamp: datetime
+    data: Dict[str, Any] = field(default_factory=dict)
+    source: Optional[str] = None
+    
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now()
+
+# =============================================================================
+# LOGGING SYSTEM
+# =============================================================================
 
 class FrameworkLogger:
-    """
-    Framework logging system with CSV output capability.
-    Simplified version for Phase 0 - focuses on CSV export compatibility.
-    """
+    """Custom logging system with categorization and limits"""
     
-    def __init__(self, name: str = "OAFramework", max_entries: int = SystemDefaults.MAX_LOG_ENTRIES):
+    def __init__(self, name: str = "OAFramework", max_entries: int = 10000):
         self.name = name
         self.max_entries = max_entries
         self._log_entries: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
         self._setup_standard_logger()
     
     def _setup_standard_logger(self) -> None:
-        """Setup standard Python logger"""
         self._standard_logger = logging.getLogger(self.name)
         if not self._standard_logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
             handler.setFormatter(formatter)
             self._standard_logger.addHandler(handler)
             self._standard_logger.setLevel(logging.INFO)
     
-    def log(self, level: LogLevel, category: LogCategory, message: str, **kwargs) -> None:
-        """Log a message with level and category"""
-        entry = {
-            'timestamp': datetime.now().isoformat(),
-            'level': level.value,
-            'category': category.value,
-            'message': message,
-            'data': json.dumps(kwargs) if kwargs else ''
-        }
-        
-        self._log_entries.append(entry)
-        
-        # Maintain max entries limit
-        if len(self._log_entries) > self.max_entries:
-            self._log_entries = self._log_entries[-self.max_entries:]
-        
-        # Also log to standard logger
-        self._log_to_standard(level, category, message, **kwargs)
-    
-    def _log_to_standard(self, level: LogLevel, category: LogCategory, message: str, **kwargs):
-        """Log to standard Python logger"""
-        formatted_message = f"[{category.value.upper()}] {message}"
-        if kwargs:
-            formatted_message += f" | Data: {kwargs}"
-        
-        if level == LogLevel.DEBUG:
-            self._standard_logger.debug(formatted_message)
-        elif level == LogLevel.INFO:
-            self._standard_logger.info(formatted_message)
-        elif level == LogLevel.WARNING:
-            self._standard_logger.warning(formatted_message)
-        elif level == LogLevel.ERROR:
-            self._standard_logger.error(formatted_message)
-        elif level == LogLevel.CRITICAL:
-            self._standard_logger.critical(formatted_message)
-    
-    def info(self, category: LogCategory, message: str, **kwargs) -> None:
-        """Log info message"""
-        self.log(LogLevel.INFO, category, message, **kwargs)
-    
-    def warning(self, category: LogCategory, message: str, **kwargs) -> None:
-        """Log warning message"""
-        self.log(LogLevel.WARNING, category, message, **kwargs)
-    
-    def error(self, category: LogCategory, message: str, **kwargs) -> None:
-        """Log error message"""
-        self.log(LogLevel.ERROR, category, message, **kwargs)
-    
-    def debug(self, category: LogCategory, message: str, **kwargs) -> None:
-        """Log debug message"""
-        self.log(LogLevel.DEBUG, category, message, **kwargs)
-    
-    def get_logs_for_csv(self) -> List[Dict[str, Any]]:
-        """Get logs formatted for CSV export"""
-        return self._log_entries.copy()
-
-class StubDecisionEngine:
-    """
-    Stub decision engine for Phase 0.
-    All decisions return YES to allow testing of framework components.
-    """
-    
-    def __init__(self, logger: FrameworkLogger):
-        self.logger = logger
-    
-    def evaluate_decision(self, decision_config: Dict[str, Any]) -> DecisionResult:
-        """
-        Stub decision evaluation - always returns YES for Phase 0.
-        """
-        try:
-            recipe_type = decision_config.get('recipe_type', 'unknown')
-            self.logger.debug(LogCategory.DECISION_FLOW, 
-                            f"Evaluating {recipe_type} decision (stub)", 
-                            config=decision_config)
-            
-            # Phase 0: Always return YES to allow testing
-            return DecisionResult.YES
-            
-        except Exception as e:
-            self.logger.error(LogCategory.DECISION_FLOW, 
-                            "Decision evaluation failed", error=str(e))
-            return DecisionResult.ERROR
-
-class StubPositionManager:
-    """
-    Stub position manager for Phase 0.
-    Creates fake positions to test framework functionality.
-    """
-    
-    def __init__(self, logger: FrameworkLogger, state_manager: CSVStateManager):
-        self.logger = logger
-        self.state_manager = state_manager
-        self._position_counter = 0
-    
-    def open_position(self, position_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Stub position opening - creates fake position for testing.
-        """
-        try:
-            self._position_counter += 1
-            position_id = f"STUB_POS_{self._position_counter:04d}"
-            
-            # Create stub position data
-            position_data = {
-                'id': position_id,
-                'symbol': position_config.get('symbol', 'SPY'),
-                'position_type': position_config.get('strategy_type', 'long_call'),
-                'state': 'open',
-                'quantity': 1,
-                'entry_price': 100.0,  # Stub price
-                'current_price': 100.0,
-                'unrealized_pnl': 0.0,
-                'realized_pnl': 0.0,
-                'opened_at': datetime.now().isoformat(),
-                'tags': ['stub_position'],
-                'legs': []  # Simplified for stub
+    def log(self, level: str, category: str, message: str, **kwargs) -> None:
+        with self._lock:
+            entry = {
+                'timestamp': datetime.now(),
+                'level': level,
+                'category': category,
+                'message': message,
+                'data': kwargs
             }
             
-            # Store in state manager
-            self.state_manager.store_position(position_data)
+            self._log_entries.append(entry)
             
-            self.logger.info(LogCategory.SYSTEM, "Bot starting", name=self.config.name)
+            # Maintain max entries limit
+            if len(self._log_entries) > self.max_entries:
+                self._log_entries = self._log_entries[-self.max_entries:]
+            
+            # Also log to standard logger
+            formatted_message = f"[{category.upper()}] {message}"
+            if kwargs:
+                formatted_message += f" | Data: {kwargs}"
+            
+            if level == "DEBUG":
+                self._standard_logger.debug(formatted_message)
+            elif level == "INFO":
+                self._standard_logger.info(formatted_message)
+            elif level == "WARNING":
+                self._standard_logger.warning(formatted_message)
+            elif level == "ERROR":
+                self._standard_logger.error(formatted_message)
+            elif level == "CRITICAL":
+                self._standard_logger.critical(formatted_message)
+    
+    def debug(self, category: str, message: str, **kwargs) -> None:
+        self.log("DEBUG", category, message, **kwargs)
+    
+    def info(self, category: str, message: str, **kwargs) -> None:
+        self.log("INFO", category, message, **kwargs)
+    
+    def warning(self, category: str, message: str, **kwargs) -> None:
+        self.log("WARNING", category, message, **kwargs)
+    
+    def error(self, category: str, message: str, **kwargs) -> None:
+        self.log("ERROR", category, message, **kwargs)
+    
+    def critical(self, category: str, message: str, **kwargs) -> None:
+        self.log("CRITICAL", category, message, **kwargs)
+    
+    def get_logs(self, level: Optional[str] = None, 
+                 category: Optional[str] = None, 
+                 limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            filtered_logs = self._log_entries.copy()
+            
+            if level:
+                filtered_logs = [log for log in filtered_logs if log['level'] == level]
+            
+            if category:
+                filtered_logs = [log for log in filtered_logs if log['category'] == category]
+            
+            if limit:
+                filtered_logs = filtered_logs[-limit:]
+            
+            return filtered_logs
+    
+    def get_summary(self) -> Dict[str, Dict[str, int]]:
+        with self._lock:
+            summary = {'levels': {}, 'categories': {}}
+            
+            for entry in self._log_entries:
+                level = entry['level']
+                category = entry['category']
+                
+                summary['levels'][level] = summary['levels'].get(level, 0) + 1
+                summary['categories'][category] = summary['categories'].get(category, 0) + 1
+            
+            return summary
+    
+    def clear_logs(self) -> None:
+        with self._lock:
+            self._log_entries.clear()
+
+# =============================================================================
+# STATE MANAGEMENT SYSTEM
+# =============================================================================
+
+class StateManager:
+    """Multi-layered state management system"""
+    
+    def __init__(self, db_path: str = "oa_framework.db"):
+        self.db_path = db_path
+        self._hot_state: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+        self._logger = FrameworkLogger("StateManager")
+        self._init_database()
+    
+    def _init_database(self) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS warm_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        timestamp REAL,
+                        category TEXT
+                    )
+                ''')
+                
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS cold_state (
+                        id TEXT PRIMARY KEY,
+                        data TEXT,
+                        timestamp REAL,
+                        category TEXT,
+                        tags TEXT
+                    )
+                ''')
+                
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS positions (
+                        id TEXT PRIMARY KEY,
+                        symbol TEXT,
+                        position_type TEXT,
+                        state TEXT,
+                        data TEXT,
+                        opened_at REAL,
+                        closed_at REAL,
+                        tags TEXT
+                    )
+                ''')
+                
+                conn.commit()
+                
+            self._logger.info("SYSTEM", "State management database initialized", 
+                            db_path=self.db_path)
+                            
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to initialize database", error=str(e))
+            raise
+    
+    # Hot State Methods (In-Memory)
+    def set_hot_state(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._hot_state[key] = {
+                'value': value,
+                'timestamp': datetime.now(),
+                'category': 'hot'
+            }
+    
+    def get_hot_state(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            entry = self._hot_state.get(key)
+            return entry['value'] if entry else default
+    
+    def clear_hot_state(self) -> None:
+        with self._lock:
+            self._hot_state.clear()
+    
+    # Warm State Methods (SQLite Session Data)
+    def set_warm_state(self, key: str, value: Any, category: str = 'session') -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO warm_state (key, value, timestamp, category)
+                    VALUES (?, ?, ?, ?)
+                ''', (key, json.dumps(value), datetime.now().timestamp(), category))
+                conn.commit()
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to set warm state", 
+                             key=key, error=str(e))
+    
+    def get_warm_state(self, key: str, default: Any = None) -> Any:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT value FROM warm_state WHERE key = ?', (key,))
+                result = cursor.fetchone()
+                if result:
+                    return json.loads(result[0])
+                return default
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to get warm state", 
+                             key=key, error=str(e))
+            return default
+    
+    # Cold State Methods (Historical Data)
+    def store_cold_state(self, data: Dict[str, Any], category: str, tags: List[str] = None) -> str:
+        record_id = str(uuid.uuid4())
+        tags_str = json.dumps(tags or [])
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO cold_state (id, data, timestamp, category, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (record_id, json.dumps(data), datetime.now().timestamp(), category, tags_str))
+                conn.commit()
+            
+            return record_id
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to store cold state", 
+                             category=category, error=str(e))
+            raise
+    
+    def get_cold_state(self, category: str, limit: int = 100, 
+                       start_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                query = 'SELECT id, data, timestamp, tags FROM cold_state WHERE category = ?'
+                params = [category]
+                
+                if start_date:
+                    query += ' AND timestamp >= ?'
+                    params.append(start_date.timestamp())
+                
+                query += ' ORDER BY timestamp DESC LIMIT ?'
+                params.append(limit)
+                
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+                
+                return [
+                    {
+                        'id': row[0],
+                        'data': json.loads(row[1]),
+                        'timestamp': datetime.fromtimestamp(row[2]),
+                        'tags': json.loads(row[3])
+                    }
+                    for row in results
+                ]
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to get cold state", 
+                             category=category, error=str(e))
+            return []
+    
+    # Position Management
+    def store_position(self, position: Position) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO positions 
+                    (id, symbol, position_type, state, data, opened_at, closed_at, tags)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    position.id,
+                    position.symbol,
+                    position.position_type,
+                    position.state,
+                    json.dumps({
+                        'quantity': position.quantity,
+                        'entry_price': position.entry_price,
+                        'current_price': position.current_price,
+                        'unrealized_pnl': position.unrealized_pnl,
+                        'realized_pnl': position.realized_pnl
+                    }),
+                    position.opened_at.timestamp(),
+                    position.closed_at.timestamp() if position.closed_at else None,
+                    json.dumps(position.tags)
+                ))
+                conn.commit()
+                
+            self._logger.info("SYSTEM", "Position stored", position_id=position.id)
+            
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to store position", 
+                             position_id=position.id, error=str(e))
+            raise
+    
+    def get_positions(self, state: Optional[str] = None, 
+                     symbol: Optional[str] = None) -> List[Position]:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                query = 'SELECT * FROM positions WHERE 1=1'
+                params = []
+                
+                if state:
+                    query += ' AND state = ?'
+                    params.append(state)
+                
+                if symbol:
+                    query += ' AND symbol = ?'
+                    params.append(symbol)
+                
+                query += ' ORDER BY opened_at DESC'
+                
+                cursor.execute(query, params)
+                results = cursor.fetchall()
+                
+                positions = []
+                for row in results:
+                    data = json.loads(row[4])
+                    
+                    position = Position(
+                        id=row[0],
+                        symbol=row[1],
+                        position_type=row[2],
+                        state=row[3],
+                        opened_at=datetime.fromtimestamp(row[5]),
+                        quantity=data['quantity'],
+                        entry_price=data['entry_price'],
+                        current_price=data['current_price'],
+                        unrealized_pnl=data['unrealized_pnl'],
+                        realized_pnl=data['realized_pnl'],
+                        closed_at=datetime.fromtimestamp(row[6]) if row[6] else None,
+                        tags=json.loads(row[7])
+                    )
+                    positions.append(position)
+                
+                return positions
+                
+        except Exception as e:
+            self._logger.error("SYSTEM", "Failed to get positions", error=str(e))
+            return []
+
+# =============================================================================
+# EVENT SYSTEM
+# =============================================================================
+
+class EventHandler(ABC):
+    @abstractmethod
+    def handle_event(self, event: Event) -> None:
+        pass
+    
+    @abstractmethod
+    def can_handle(self, event_type: str) -> bool:
+        pass
+
+class EventBus:
+    def __init__(self):
+        self._handlers: Dict[str, List[EventHandler]] = {}
+        self._event_queue = queue.Queue()
+        self._processing = False
+        self._process_thread: Optional[threading.Thread] = None
+        self._logger = FrameworkLogger("EventBus")
+    
+    def subscribe(self, event_type: str, handler: EventHandler) -> None:
+        if event_type not in self._handlers:
+            self._handlers[event_type] = []
+        self._handlers[event_type].append(handler)
+        self._logger.debug("SYSTEM", f"Handler subscribed to {event_type}")
+    
+    def unsubscribe(self, event_type: str, handler: EventHandler) -> None:
+        if event_type in self._handlers:
+            try:
+                self._handlers[event_type].remove(handler)
+                self._logger.debug("SYSTEM", f"Handler unsubscribed from {event_type}")
+            except ValueError:
+                self._logger.warning("SYSTEM", f"Handler not found for {event_type}")
+    
+    def publish(self, event: Event) -> None:
+        self._event_queue.put(event)
+        self._logger.debug("SYSTEM", f"Event published: {event.event_type}")
+    
+    def start_processing(self) -> None:
+        if not self._processing:
+            self._processing = True
+            self._process_thread = threading.Thread(target=self._process_events, daemon=True)
+            self._process_thread.start()
+            self._logger.info("SYSTEM", "Event processing started")
+    
+    def stop_processing(self) -> None:
+        self._processing = False
+        if self._process_thread:
+            self._process_thread.join(timeout=5)
+        self._logger.info("SYSTEM", "Event processing stopped")
+    
+    def _process_events(self) -> None:
+        while self._processing:
+            try:
+                event = self._event_queue.get(timeout=1)
+                self._dispatch_event(event)
+                self._event_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                self._logger.error("SYSTEM", f"Error processing event: {e}")
+    
+    def _dispatch_event(self, event: Event) -> None:
+        handlers = self._handlers.get(event.event_type, [])
+        for handler in handlers:
+            try:
+                if handler.can_handle(event.event_type):
+                    handler.handle_event(event)
+            except Exception as e:
+                self._logger.error("SYSTEM", f"Error in handler: {e}")
+
+# =============================================================================
+# DECISION ENGINE (STUBBED FOR PHASE 0)
+# =============================================================================
+
+class DecisionEngine:
+    def __init__(self, logger: FrameworkLogger, state_manager: StateManager):
+        self.logger = logger
+        self.state_manager = state_manager
+    
+    def evaluate_decision(self, decision_config: Dict[str, Any]) -> str:
+        """Evaluate a decision - stub implementation returns 'YES'"""
+        try:
+            recipe_type = decision_config.get('recipe_type', 'unknown')
+            self.logger.debug("DECISION_FLOW", 
+                            "Decision evaluated (stub)", 
+                            type=recipe_type)
+            return "YES"  # Stub always returns YES
+            
+        except Exception as e:
+            self.logger.error("DECISION_FLOW", 
+                            "Decision evaluation failed", error=str(e))
+            return "ERROR"
+
+# =============================================================================
+# POSITION MANAGER (STUBBED FOR PHASE 0)
+# =============================================================================
+
+class PositionManager:
+    def __init__(self, logger: FrameworkLogger, state_manager: StateManager):
+        self.logger = logger
+        self.state_manager = state_manager
+        self._positions: Dict[str, Position] = {}
+        self._lock = threading.Lock()
+    
+    def open_position(self, position_config: Dict[str, Any]) -> Optional[Position]:
+        """Open a new position - stub implementation"""
+        try:
+            position = Position(
+                id=str(uuid.uuid4()),
+                symbol=position_config.get('symbol', 'SPY'),
+                position_type=position_config.get('strategy_type', 'long_call'),
+                state="OPEN",
+                opened_at=datetime.now(),
+                quantity=1,
+                entry_price=100.0,
+                current_price=100.0
+            )
+            
+            with self._lock:
+                self._positions[position.id] = position
+            
+            self.state_manager.store_position(position)
+            
+            self.logger.info("TRADE_EXECUTION", 
+                           "Position opened (stub)", 
+                           position_id=position.id, 
+                           symbol=position.symbol)
+            
+            return position
+            
+        except Exception as e:
+            self.logger.error("TRADE_EXECUTION", 
+                            "Failed to open position", error=str(e))
+            return None
+    
+    def close_position(self, position_id: str, close_config: Dict[str, Any] = None) -> bool:
+        """Close an existing position - stub implementation"""
+        try:
+            with self._lock:
+                position = self._positions.get(position_id)
+                if not position:
+                    self.logger.warning("TRADE_EXECUTION", 
+                                      "Position not found for close", 
+                                      position_id=position_id)
+                    return False
+                
+                position.state = "CLOSED"
+                position.closed_at = datetime.now()
+                position.exit_price = position.current_price
+                position.realized_pnl = 10.0  # Stub P&L
+            
+            self.state_manager.store_position(position)
+            
+            self.logger.info("TRADE_EXECUTION", 
+                           "Position closed (stub)", 
+                           position_id=position_id)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error("TRADE_EXECUTION", 
+                            "Failed to close position", 
+                            position_id=position_id, error=str(e))
+            return False
+    
+    def get_open_positions(self) -> List[Position]:
+        with self._lock:
+            return [pos for pos in self._positions.values() 
+                   if pos.state == "OPEN"]
+    
+    def get_position(self, position_id: str) -> Optional[Position]:
+        with self._lock:
+            return self._positions.get(position_id)
+    
+    def update_position_prices(self, market_data: Dict[str, MarketData]) -> None:
+        """Update position prices - stub implementation"""
+        with self._lock:
+            for position in self._positions.values():
+                if position.state == "OPEN":
+                    market_price = market_data.get(position.symbol)
+                    if market_price:
+                        position.current_price = market_price.price
+                        position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                        
+                        self.logger.debug("MARKET_DATA", 
+                                        "Position price updated", 
+                                        position_id=position.id,
+                                        new_price=position.current_price)
+
+# =============================================================================
+# MAIN BOT CLASS
+# =============================================================================
+
+class OABot:
+    """Main Option Alpha bot class"""
+    
+    def __init__(self, config_dict: Dict[str, Any]):
+        self.config = config_dict
+        self.name = config_dict.get('name', 'Unknown Bot')
+        
+        # Initialize core components
+        self.logger = FrameworkLogger(f"OABot-{self.name}")
+        self.state_manager = StateManager()
+        self.event_bus = EventBus()
+        self.decision_engine = DecisionEngine(self.logger, self.state_manager)
+        self.position_manager = PositionManager(self.logger, self.state_manager)
+        
+        # Bot state
+        self.state = "STOPPED"
+        self._automation_states: Dict[str, str] = {}
+        
+        self.logger.info("SYSTEM", 
+                        "Bot initialized", 
+                        name=self.name,
+                        automations=len(config_dict.get('automations', [])))
+    
+    def start(self) -> None:
+        """Start the bot and all its automations"""
+        try:
+            self.state = "STARTING"
+            self.logger.info("SYSTEM", "Bot starting", name=self.name)
+            
+            # Start event processing
+            self.event_bus.start_processing()
             
             # Initialize automations
-            for automation in self.config.automations:
+            for automation in self.config.get('automations', []):
                 automation_name = automation.get('name', 'Unnamed')
-                self._automation_states[automation_name] = AutomationState.IDLE
-                self.logger.info(LogCategory.SYSTEM, 
+                self._automation_states[automation_name] = "IDLE"
+                self.logger.info("SYSTEM", 
                                "Automation initialized", 
                                automation=automation_name)
             
-            # Log bot start to state manager
-            self.state_manager.log_framework_event(
-                "bot_started",
-                f"Bot {self.config.name} started successfully",
-                bot_name=self.config.name,
-                automations=len(self.config.automations)
-            )
+            self.state = "RUNNING"
             
-            self.state = BotState.RUNNING
-            self.logger.info(LogCategory.SYSTEM, "Bot started successfully", name=self.config.name)
+            # Publish bot started event
+            self.event_bus.publish(Event(
+                event_type="BOT_STARTED",
+                timestamp=datetime.now(),
+                data={'bot_name': self.name}
+            ))
+            
+            self.logger.info("SYSTEM", "Bot started successfully", name=self.name)
             
         except Exception as e:
-            self.state = BotState.ERROR
-            self.logger.error(LogCategory.SYSTEM, "Failed to start bot", error=str(e))
+            self.state = "ERROR"
+            self.logger.error("SYSTEM", "Failed to start bot", error=str(e))
             raise
     
     def stop(self) -> None:
         """Stop the bot and all its automations"""
         try:
-            self.state = BotState.STOPPING
-            self.logger.info(LogCategory.SYSTEM, "Bot stopping", name=self.config.name)
+            self.state = "STOPPING"
+            self.logger.info("SYSTEM", "Bot stopping", name=self.name)
+            
+            # Stop event processing
+            self.event_bus.stop_processing()
             
             # Set all automations to disabled
             for automation_name in self._automation_states:
-                self._automation_states[automation_name] = AutomationState.DISABLED
+                self._automation_states[automation_name] = "DISABLED"
             
-            # Log bot stop to state manager
-            self.state_manager.log_framework_event(
-                "bot_stopped",
-                f"Bot {self.config.name} stopped",
-                bot_name=self.config.name
-            )
+            self.state = "STOPPED"
             
-            self.state = BotState.STOPPED
-            self.logger.info(LogCategory.SYSTEM, "Bot stopped successfully", name=self.config.name)
+            # Publish bot stopped event
+            self.event_bus.publish(Event(
+                event_type="BOT_STOPPED",
+                timestamp=datetime.now(),
+                data={'bot_name': self.name}
+            ))
+            
+            self.logger.info("SYSTEM", "Bot stopped successfully", name=self.name)
             
         except Exception as e:
-            self.state = BotState.ERROR
-            self.logger.error(LogCategory.SYSTEM, "Failed to stop bot", error=str(e))
+            self.state = "ERROR"
+            self.logger.error("SYSTEM", "Failed to stop bot", error=str(e))
             raise
     
     def get_status(self) -> Dict[str, Any]:
         """Get current bot status and statistics"""
-        try:
-            # Get position statistics
-            open_positions = self.state_manager.get_positions(state='open')
-            
-            return {
-                'name': self.config.name,
-                'state': self.state.value,
-                'backtest_id': self.state_manager.get_backtest_id(),
-                'automations': {
-                    name: state.value 
-                    for name, state in self._automation_states.items()
-                },
-                'positions': {
-                    'open_count': len(open_positions),
-                    'total_unrealized_pnl': sum(pos.get('unrealized_pnl', 0) for pos in open_positions)
-                },
-                'safeguards': self.config.safeguards,
-                'scan_speed': self.config.scan_speed,
-                'data_directory': str(self.state_manager.get_data_directory())
-            }
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Failed to get bot status", error=str(e))
-            return {'error': str(e)}
+        open_positions = self.position_manager.get_open_positions()
+        
+        return {
+            'name': self.name,
+            'state': self.state,
+            'automations': {
+                name: state 
+                for name, state in self._automation_states.items()
+            },
+            'positions': {
+                'open_count': len(open_positions),
+                'total_unrealized_pnl': sum(pos.unrealized_pnl for pos in open_positions)
+            },
+            'safeguards': self.config.get('safeguards', {}),
+            'scan_speed': self.config.get('scan_speed', '15_minutes')
+        }
     
-    def process_automation(self, automation_name: str) -> bool:
-        """
-        Process a single automation. This is a stub for Phase 0.
-        """
+    def process_automation(self, automation_name: str) -> None:
+        """Process a single automation - stub for Phase 0"""
         try:
-            # Find automation config
             automation_config = None
-            for auto in self.config.automations:
+            for auto in self.config.get('automations', []):
                 if auto.get('name') == automation_name:
                     automation_config = auto
                     break
             
             if not automation_config:
-                self.logger.error(LogCategory.SYSTEM, 
+                self.logger.error("SYSTEM", 
                                 "Automation not found", 
                                 automation=automation_name)
-                return False
+                return
             
-            self._automation_states[automation_name] = AutomationState.RUNNING
+            self._automation_states[automation_name] = "RUNNING"
             
-            self.logger.info(LogCategory.DECISION_FLOW, 
+            self.logger.info("DECISION_FLOW", 
                            "Processing automation (stub)", 
                            automation=automation_name)
             
-            # Stub automation processing
-            success = self._process_actions(automation_config.get('actions', []))
+            # TODO: Implement full automation processing in Phase 2
             
-            if success:
-                self._automation_states[automation_name] = AutomationState.COMPLETED
-            else:
-                self._automation_states[automation_name] = AutomationState.ERROR
-            
-            return success
+            self._automation_states[automation_name] = "COMPLETED"
             
         except Exception as e:
-            self._automation_states[automation_name] = AutomationState.ERROR
-            self.logger.error(LogCategory.SYSTEM, 
+            self._automation_states[automation_name] = "ERROR"
+            self.logger.error("SYSTEM", 
                             "Automation processing failed", 
                             automation=automation_name, error=str(e))
-            return False
-    
-    def _process_actions(self, actions: List[Dict[str, Any]]) -> bool:
-        """
-        Process a list of actions. Stub implementation for Phase 0.
-        """
-        try:
-            for i, action in enumerate(actions):
-                action_type = action.get('type')
-                self.logger.debug(LogCategory.DECISION_FLOW, 
-                                f"Processing action {i+1}: {action_type}")
-                
-                if action_type == 'decision':
-                    # Evaluate decision and follow appropriate path
-                    decision_result = self.decision_engine.evaluate_decision(action.get('decision', {}))
-                    
-                    if decision_result == DecisionResult.YES:
-                        yes_actions = action.get('yes_path', [])
-                        if yes_actions:
-                            self._process_actions(yes_actions)
-                    elif decision_result == DecisionResult.NO:
-                        no_actions = action.get('no_path', [])
-                        if no_actions:
-                            self._process_actions(no_actions)
-                
-                elif action_type == 'open_position':
-                    # Open position using stub position manager
-                    position_config = action.get('position', {})
-                    position = self.position_manager.open_position(position_config)
-                    
-                    if position:
-                        # Log trade
-                        self.state_manager.log_trade({
-                            'symbol': position['symbol'],
-                            'action': 'OPEN',
-                            'position_type': position['position_type'],
-                            'quantity': position['quantity'],
-                            'price': position['entry_price'],
-                            'bot_name': self.config.name
-                        })
-                
-                elif action_type == 'notification':
-                    # Log notification
-                    message = action.get('message', 'No message provided')
-                    self.logger.info(LogCategory.SYSTEM, f"Notification: {message}")
-                
-                elif action_type == 'tag_bot':
-                    # Add tags to bot (store in warm state)
-                    tags = action.get('tags', [])
-                    self.state_manager.set_warm_state('bot_tags', tags, 'tags')
-                    self.logger.info(LogCategory.SYSTEM, f"Bot tagged: {tags}")
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(LogCategory.DECISION_FLOW, "Action processing failed", error=str(e))
-            return False
-    
-    def run_backtest_simulation(self, steps: int = 10) -> Dict[str, Any]:
-        """
-        Run a simple backtest simulation for demonstration purposes.
-        This simulates running automations multiple times.
-        
-        Args:
-            steps: Number of simulation steps to run
-            
-        Returns:
-            Dictionary with simulation results
-        """
-        try:
-            self.logger.info(LogCategory.SYSTEM, 
-                           f"Starting backtest simulation with {steps} steps")
-            
-            simulation_results = {
-                'steps_completed': 0,
-                'positions_opened': 0,
-                'errors': 0,
-                'automations_run': 0
+
+# =============================================================================
+# CONFIGURATION HELPERS
+# =============================================================================
+
+def create_simple_bot_config() -> Dict[str, Any]:
+    """Create a simple bot configuration for testing"""
+    return {
+        "name": "Simple Test Bot",
+        "account": "paper_trading",
+        "group": "Test Strategies",
+        "safeguards": {
+            "capital_allocation": 10000,
+            "daily_positions": 5,
+            "position_limit": 15,
+            "daytrading_allowed": False
+        },
+        "scan_speed": "15_minutes",
+        "symbols": {
+            "type": "static",
+            "list": ["SPY", "QQQ"]
+        },
+        "automations": [
+            {
+                "name": "Simple Scanner",
+                "trigger": {
+                    "type": "continuous",
+                    "automation_type": "scanner"
+                },
+                "actions": [
+                    {
+                        "type": "decision",
+                        "decision": {
+                            "recipe_type": "stock",
+                            "symbol": "SPY",
+                            "comparison": "greater_than",
+                            "value": 400
+                        }
+                    }
+                ]
             }
-            
-            for step in range(steps):
-                self.logger.debug(LogCategory.SYSTEM, f"Simulation step {step + 1}")
-                
-                # Process each automation
-                for automation in self.config.automations:
-                    automation_name = automation.get('name')
-                    try:
-                        success = self.process_automation(automation_name)
-                        if success:
-                            simulation_results['automations_run'] += 1
-                        else:
-                            simulation_results['errors'] += 1
-                    except Exception as e:
-                        simulation_results['errors'] += 1
-                        self.logger.error(LogCategory.SYSTEM, 
-                                        f"Error in step {step + 1}", error=str(e))
-                
-                simulation_results['steps_completed'] = step + 1
-            
-            # Get final position count
-            open_positions = self.state_manager.get_positions(state='open')
-            simulation_results['positions_opened'] = len(open_positions)
-            
-            # Store simulation results
-            self.state_manager.store_analytics(simulation_results, 'simulation')
-            
-            self.logger.info(LogCategory.PERFORMANCE, 
-                           "Backtest simulation completed", 
-                           **simulation_results)
-            
-            return simulation_results
-            
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Simulation failed", error=str(e))
-            return {'error': str(e)}
-    
-    def finalize_backtest(self, upload_to_s3: bool = True) -> Dict[str, Any]:
-        """
-        Finalize the backtest by exporting logs and uploading to S3.
-        
-        Args:
-            upload_to_s3: Whether to upload results to S3
-            
-        Returns:
-            Dictionary with finalization results
-        """
-        try:
-            # Export logs to CSV
-            log_entries = self.logger.get_logs_for_csv()
-            if log_entries:
-                # Store logs in state manager
-                for entry in log_entries:
-                    self.state_manager.log_framework_event(
-                        entry['level'],
-                        entry['message'],
-                        category=entry['category'],
-                        timestamp=entry['timestamp'],
-                        data=entry['data']
-                    )
-            
-            # Get final bot status
-            final_status = self.get_status()
-            self.state_manager.store_analytics(final_status, 'final_status')
-            
-            # Finalize through state manager
-            result = self.state_manager.finalize_backtest(upload_to_s3=upload_to_s3)
-            
-            self.logger.info(LogCategory.SYSTEM, 
-                           "Backtest finalized", 
-                           backtest_id=result.get('backtest_id'),
-                           s3_uploaded=result.get('s3_uploaded', False))
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(LogCategory.SYSTEM, "Backtest finalization failed", error=str(e))
-            return {'error': str(e)}
-
-# =============================================================================
-# FRAMEWORK FACTORY FUNCTIONS
-# =============================================================================
-
-def create_bot_from_config_file(config_path: str, data_dir: str = None, s3_bucket: str = None) -> OABot:
-    """
-    Factory function to create a bot from a configuration file.
-    
-    Args:
-        config_path: Path to JSON configuration file
-        data_dir: Directory for CSV data files
-        s3_bucket: Optional S3 bucket for uploading results
-        
-    Returns:
-        Configured OABot instance
-    """
-    return OABot(config_path=config_path, data_dir=data_dir, s3_bucket=s3_bucket)
-
-def create_bot_from_template(template_name: str, data_dir: str = None, s3_bucket: str = None) -> OABot:
-    """
-    Factory function to create a bot from a predefined template.
-    
-    Args:
-        template_name: Name of template ('simple_call', 'iron_condor', '0dte_samurai', etc.)
-        data_dir: Directory for CSV data files  
-        s3_bucket: Optional S3 bucket for uploading results
-        
-    Returns:
-        Configured OABot instance
-    """
-    generator = OABotConfigGenerator()
-    
-    template_map = {
-        'simple_call': generator.generate_simple_long_call_bot,
-        'iron_condor': generator.generate_iron_condor_bot,
-        '0dte_samurai': generator.generate_0dte_samurai_bot,
-        'put_selling': generator.generate_simple_put_selling_bot,
-        'comprehensive': generator.generate_comprehensive_bot
+        ]
     }
-    
-    if template_name not in template_map:
-        raise ValueError(f"Unknown template: {template_name}. Available: {list(template_map.keys())}")
-    
-    config = template_map[template_name]()
-    return OABot(config_dict=config, data_dir=data_dir, s3_bucket=s3_bucket)
 
 # =============================================================================
 # DEMONSTRATION FUNCTION
 # =============================================================================
 
 def demonstrate_framework():
-    """Demonstrate the complete framework functionality"""
+    """Demonstrate the framework functionality"""
     
-    print("=" * 70)
-    print("Option Alpha Bot Framework - Complete Demonstration")
-    print("=" * 70)
+    print("=" * 60)
+    print("Option Alpha Framework - Phase 0 Demonstration")
+    print("=" * 60)
     
     try:
-        # 1. Create bot from template
-        print("\n1. Creating bot from 0DTE Samurai template...")
-        bot = create_bot_from_template('0dte_samurai', data_dir='demo_backtest')
-        print(f"✓ Bot created: {bot.config.name}")
-        print(f"   Backtest ID: {bot.state_manager.get_backtest_id()}")
+        # 1. Create bot configuration
+        config = create_simple_bot_config()
+        print(f"✓ Created bot configuration: {config['name']}")
         
-        # 2. Start bot
-        print("\n2. Starting bot...")
+        # 2. Initialize bot
+        bot = OABot(config)
+        print(f"✓ Bot initialized: {bot.name}")
+        
+        # 3. Start bot
         bot.start()
-        print("✓ Bot started successfully")
+        print(f"✓ Bot started successfully")
         
-        # 3. Show bot status
-        print("\n3. Bot Status:")
+        # 4. Show status
         status = bot.get_status()
-        for key, value in status.items():
-            if isinstance(value, dict):
-                print(f"   {key}:")
-                for sub_key, sub_value in value.items():
-                    print(f"     {sub_key}: {sub_value}")
-            else:
-                print(f"   {key}: {value}")
+        print(f"✓ Bot status: {status['state']}")
+        print(f"  Automations: {len(status['automations'])}")
+        print(f"  Open positions: {status['positions']['open_count']}")
         
-        # 4. Run simulation
-        print("\n4. Running backtest simulation...")
-        simulation_results = bot.run_backtest_simulation(steps=5)
-        print("✓ Simulation completed:")
-        for key, value in simulation_results.items():
-            print(f"   {key}: {value}")
+        # 5. Test logging
+        bot.logger.info("SYSTEM", "Test log message", test=True)
+        logs = bot.logger.get_logs(limit=5)
+        print(f"✓ Logging system working: {len(logs)} entries")
         
-        # 5. Process individual automation
-        print("\n5. Testing individual automation...")
-        if bot.config.automations:
-            automation_name = bot.config.automations[0]['name']
-            success = bot.process_automation(automation_name)
-            print(f"✓ Automation '{automation_name}' processed: {success}")
+        # 6. Test state management
+        bot.state_manager.set_hot_state("test", {"value": 123})
+        test_val = bot.state_manager.get_hot_state("test")
+        print(f"✓ State management working: {test_val}")
         
-        # 6. Check positions
-        print("\n6. Position Summary:")
-        positions = bot.state_manager.get_positions()
-        print(f"   Total positions: {len(positions)}")
-        for pos in positions[:3]:  # Show first 3
-            print(f"   - {pos['id']}: {pos['symbol']} {pos['position_type']} ({pos['state']})")
+        # 7. Test position management
+        pos_config = {"symbol": "SPY", "strategy_type": "long_call"}
+        position = bot.position_manager.open_position(pos_config)
+        print(f"✓ Position management working: {position.id if position else 'Failed'}")
         
-        # 7. Stop bot
-        print("\n7. Stopping bot...")
+        # 8. Test decision engine
+        decision_config = {"recipe_type": "stock", "symbol": "SPY"}
+        result = bot.decision_engine.evaluate_decision(decision_config)
+        print(f"✓ Decision engine working: {result}")
+        
+        # 9. Stop bot
         bot.stop()
-        print("✓ Bot stopped successfully")
+        print(f"✓ Bot stopped successfully")
         
-        # 8. Finalize backtest
-        print("\n8. Finalizing backtest...")
-        finalization_result = bot.finalize_backtest(upload_to_s3=False)  # Don't upload for demo
-        print("✓ Backtest finalized:")
-        if 'summary' in finalization_result:
-            summary = finalization_result['summary']
-            print(f"   Duration: {summary.get('end_time', 'N/A')}")
-            if 'statistics' in summary:
-                stats = summary['statistics']
-                print(f"   Positions: {stats.get('positions', {}).get('total_positions', 0)}")
-                print(f"   Trades: {stats.get('trades', {}).get('total_trades', 0)}")
-        
-        print(f"   Local data: {finalization_result.get('local_path', 'N/A')}")
-        
-        print("\n" + "=" * 70)
-        print("✅ FRAMEWORK DEMONSTRATION COMPLETE!")
-        print("🎯 Phase 0: Core framework working correctly")
-        print("📊 CSV data exported successfully")  
-        print("🔧 Ready for Phase 1: QuantConnect integration")
-        print("=" * 70)
-        
-        return True
+        print("\n" + "=" * 60)
+        print("✅ Framework demonstration completed successfully!")
+        print("✅ All core components are working")
+        print("✅ Ready for Phase 1 development")
+        print("=" * 60)
         
     except Exception as e:
-        print(f"\n❌ Framework demonstration failed: {str(e)}")
+        print(f"❌ Framework demonstration failed: {str(e)}")
         import traceback
         traceback.print_exc()
-        return False
+        raise
 
 if __name__ == "__main__":
-    success = demonstrate_framework()
-    if not success:
-        exit(1)TRADE_EXECUTION, 
-                           "Position opened (stub)", 
-                           position_id=position_id, 
-                           symbol=position_data['symbol'])
-            
-            return position_data
-            
-        except Exception as e:
-            self.logger.error(LogCategory.TRADE_EXECUTION, 
-                            "Failed to open position", error=str(e))
-            return None
-    
-    def close_position(self, position_id: str) -> bool:
-        """
-        Stub position closing.
-        """
-        try:
-            # In a real implementation, we'd update the position in the state manager
-            self.logger.info(LogCategory.TRADE_EXECUTION, 
-                           "Position closed (stub)", 
-                           position_id=position_id)
-            return True
-            
-        except Exception as e:
-            self.logger.error(LogCategory.TRADE_EXECUTION, 
-                            "Failed to close position", 
-                            position_id=position_id, error=str(e))
-            return False
-
-class OABot:
-    """
-    Main Option Alpha bot class that orchestrates all components.
-    This is the primary interface for creating and running OA bots.
-    """
-    
-    def __init__(self, config_path: str = None, config_dict: Dict[str, Any] = None, 
-                 data_dir: str = None, s3_bucket: str = None):
-        """
-        Initialize bot with configuration.
-        
-        Args:
-            config_path: Path to JSON configuration file
-            config_dict: Configuration dictionary (alternative to file)
-            data_dir: Directory for CSV data files
-            s3_bucket: Optional S3 bucket for uploading results
-        """
-        
-        # Load and validate configuration
-        self.config_loader = OABotConfigLoader()
-        
-        if config_path:
-            self.config_dict = self.config_loader.load_config(config_path)
-        elif config_dict:
-            self.config_dict = self.config_loader.load_config_from_dict(config_dict, "provided_config")
-        else:
-            raise ValueError("Must provide either config_path or config_dict")
-        
-        self.config = BotConfiguration.from_dict(self.config_dict)
-        
-        # Initialize core components
-        self.logger = FrameworkLogger(f"OABot-{self.config.name}")
-        self.state_manager = CSVStateManager(data_dir=data_dir, s3_bucket=s3_bucket)
-        self.decision_engine = StubDecisionEngine(self.logger)
-        self.position_manager = StubPositionManager(self.logger, self.state_manager)
-        
-        # Bot state
-        self.state = BotState.STOPPED
-        self._automation_states: Dict[str, AutomationState] = {}
-        
-        self.logger.info(LogCategory.SYSTEM, 
-                        "Bot initialized", 
-                        name=self.config.name,
-                        automations=len(self.config.automations),
-                        backtest_id=self.state_manager.get_backtest_id())
-    
-    def start(self) -> None:
-        """Start the bot and initialize automations"""
-        try:
-            self.state = BotState.STARTING
-            self.logger.info(LogCategory.
+    demonstrate_framework()
