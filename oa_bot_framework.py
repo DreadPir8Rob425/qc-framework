@@ -6,6 +6,7 @@ import tempfile
 import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+from pathlib import Path
 
 # Import from dedicated modules - NO MORE DUPLICATE CLASSES
 from oa_logging import FrameworkLogger, LogLevel, LogCategory
@@ -252,11 +253,12 @@ class OABot:
             exported_files.update(state_files)
             
             # Export analytics
-            analytics_files = self.analytics.export_analytics_to_csv(f"{export_dir}/analytics")
+            analytics_path = Path(f"{export_dir}/analytics")
+            analytics_files = self.analytics.export_analytics_to_csv(analytics_path)
             exported_files.update(analytics_files)
             
             # Export positions
-            pos_file = f"{export_dir}/positions.csv"
+            pos_file = Path(f"{export_dir}/positions.csv")
             self.position_manager.export_positions_to_csv(pos_file)
             exported_files['positions'] = pos_file
             

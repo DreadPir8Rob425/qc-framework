@@ -6,33 +6,11 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, TextIO
 from dataclasses import dataclass, field
-from enum import Enum
+from oa_framework_enums import LogCategory, LogLevel
 import json
 import os
 from pathlib import Path
 
-# =============================================================================
-# LOGGING ENUMS AND CONSTANTS
-# =============================================================================
-
-class LogLevel(Enum):
-    """Logging levels for the framework"""
-    DEBUG = "DEBUG"
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    CRITICAL = "CRITICAL"
-
-class LogCategory(Enum):
-    """Categories for organizing log messages"""
-    TRADE_EXECUTION = "TRADE_EXECUTION"
-    DECISION_FLOW = "DECISION_FLOW"
-    MARKET_DATA = "MARKET_DATA"
-    PERFORMANCE = "PERFORMANCE"
-    SYSTEM = "SYSTEM"
-    DEBUG = "DEBUG"
-    AUTOMATION = "AUTOMATION"
-    RISK_MANAGEMENT = "RISK_MANAGEMENT"
 
 # =============================================================================
 # LOG ENTRY STRUCTURE

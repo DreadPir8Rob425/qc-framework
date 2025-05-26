@@ -4,7 +4,7 @@
 import logging
 import json
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 import uuid
@@ -505,7 +505,7 @@ class PositionManager:
                             export_path=str(export_path), error=str(e))
             return False
     
-    def cleanup_old_positions(self, days_to_keep: int = 365) -> Dict[str, int]:
+    def cleanup_old_positions(self, days_to_keep: int = 365) -> Dict[str, Union[int, str]]:
         """
         Clean up old closed positions from storage.
         

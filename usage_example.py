@@ -9,7 +9,7 @@ from pathlib import Path
 
 # Import framework components
 from oa_config_generator import OABotConfigGenerator
-from oa_bot_framework import OABot, create_bot_from_template
+from oa_bot_framework import OABot
 from oa_json_schema import OABotConfigLoader
 
 def example_1_create_from_template():

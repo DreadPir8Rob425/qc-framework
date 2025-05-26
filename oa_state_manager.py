@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass, field
-from oa_framework_enums import LogCategory, PositionState, ErrorCode
+from oa_framework_enums import LogCategory, PositionState, ErrorCode, OptionType
 from oa_logging import FrameworkLogger
 from pathlib import Path
 import tempfile
@@ -186,7 +186,7 @@ class StateManager:
             return record_id
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to store cold state", 
-                             category=category, error=str(e))
+                             storage_category=category, error=str(e))
             raise
     
     def get_cold_state(self, category: str, limit: int = 100, 
@@ -220,7 +220,7 @@ class StateManager:
                 ]
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to get cold state", 
-                             category=category, error=str(e))
+                             storage_category=category, error=str(e))
             return []
     
     def store_position(self, position) -> None:
@@ -523,77 +523,7 @@ class StateManager:
             self._create_empty_csv(file_path, ['id', 'symbol', 'position_type', 'state', 'data', 
                                 'opened_at', 'closed_at', 'tags'])
     
-    def _export_positions_summary_to_csv(self, file_path: Path) -> None:
-        """Export flattened positions data for analysis"""
-        try:
-            positions = self.get_positions()
-            
-            if not positions:
-                # Create empty CSV with headers
-                self._create_empty_csv(file_path, [
-                    'position_id', 'symbol', 'position_type', 'state', 'quantity',
-                    'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
-                    'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
-                    'leg_count', 'leg_details'
-                ])
-                return
-            
-            summary_data = []
-            
-            for position in positions:
-                # Flatten leg data
-                leg_details = []
-                for leg in position.legs:
-                    leg_details.append({
-                        'type': leg.option_type.value,
-                        'side': leg.side.value,
-                        'strike': leg.strike,
-                        'expiration': leg.expiration.isoformat(),
-                        'delta': leg.delta,
-                        'entry_price': leg.entry_price,
-                        'current_price': leg.current_price
-                    })
-                
-                summary_data.append({
-                    'position_id': position.id,
-                    'symbol': position.symbol,
-                    'position_type': position.position_type.value,
-                    'state': position.state.value,
-                    'quantity': position.quantity,
-                    'entry_price': position.entry_price,
-                    'current_price': position.current_price,
-                    'exit_price': position.exit_price,
-                    'unrealized_pnl': position.unrealized_pnl,
-                    'realized_pnl': position.realized_pnl,
-                    'total_pnl': position.total_pnl,
-                    'opened_at': position.opened_at.isoformat(),
-                    'closed_at': position.closed_at.isoformat() if position.closed_at else None,
-                    'days_open': position.days_open,
-                    'tags': json.dumps(position.tags),
-                    'leg_count': len(position.legs),
-                    'leg_details': json.dumps(leg_details)
-                })
-            
-            if PANDAS_AVAILABLE and pd is not None:
-                df = pd.DataFrame(summary_data)
-                df.to_csv(file_path, index=False)
-            else:
-                # Manual CSV writing
-                with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                    if summary_data:
-                        writer = csv.DictWriter(f, fieldnames=summary_data[0].keys())
-                        writer.writeheader()
-                        writer.writerows(summary_data)
-            
-        except Exception as e:
-            self._logger.error(LogCategory.SYSTEM, "Failed to export positions summary", error=str(e))
-            # Create empty CSV with headers
-            self._create_empty_csv(file_path, [
-                'position_id', 'symbol', 'position_type', 'state', 'quantity',
-                'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
-                'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
-                'leg_count', 'leg_details'
-            ])
+ 
     
     def _export_hot_state_to_csv(self, file_path: Path) -> None:
         """Export hot state to CSV"""
@@ -650,6 +580,42 @@ class StateManager:
                 writer.writerow(columns)
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to create empty CSV", error=str(e))
+            # That's it - this method should end here
+        
+    def _export_positions_summary_to_csv(self, file_path: Path) -> None:
+        """Export flattened positions data for analysis"""
+        try:
+            positions = self.get_positions()
+            
+            if not positions:
+                # Create empty CSV with headers
+                self._create_empty_csv(file_path, [
+                    'position_id', 'symbol', 'position_type', 'state', 'quantity',
+                    'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
+                    'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
+                    'leg_count', 'leg_details'
+                ])
+                return
+            
+            summary_data = []  # ✅ Now summary_data is defined
+            
+            for position in positions:
+                # Flatten leg data
+                leg_details = []
+                for leg in position.legs:
+                    leg_details.append({
+                        'type': leg.option_type.value,
+                        'side': leg.side.value,
+                        'strike': leg.strike,
+                        'expiration': leg.expiration.isoformat(),
+                        'delta': leg.delta,
+                        'entry_price': leg.entry_price,
+                        'current_price': leg.current_price
+                    })
+                
+                summary_data.append({
+                    'position_id': position.id,
+                    'symbol': position.symbol,
                     'position_type': position.position_type.value,
                     'state': position.state.value,
                     'quantity': position.quantity,
@@ -667,40 +633,27 @@ class StateManager:
                     'leg_details': json.dumps(leg_details)
                 })
             
-            df = pd.DataFrame(summary_data)
-            df.to_csv(file_path, index=False)
+            # Write to CSV
+            if PANDAS_AVAILABLE and pd is not None:
+                df = pd.DataFrame(summary_data)
+                df.to_csv(file_path, index=False)
+            else:
+                # Manual CSV writing fallback
+                with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                    if summary_data:
+                        writer = csv.DictWriter(f, fieldnames=summary_data[0].keys())
+                        writer.writeheader()
+                        writer.writerows(summary_data)
             
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to export positions summary", error=str(e))
-            # Create empty CSV with headers
-            pd.DataFrame(columns=[
+            # Create empty CSV with headers on error
+            self._create_empty_csv(file_path, [
                 'position_id', 'symbol', 'position_type', 'state', 'quantity',
                 'entry_price', 'current_price', 'exit_price', 'unrealized_pnl', 'realized_pnl',
                 'total_pnl', 'opened_at', 'closed_at', 'days_open', 'tags',
                 'leg_count', 'leg_details'
-            ]).to_csv(file_path, index=False)
-    
-    def _export_hot_state_to_csv(self, file_path: Path) -> None:
-        """Export hot state to CSV"""
-        try:
-            with self._lock:
-                hot_state_data = []
-                for key, entry in self._hot_state.items():
-                    hot_state_data.append({
-                        'key': key,
-                        'value': json.dumps(entry['value']),
-                        'timestamp': entry['timestamp'].timestamp(),
-                        'timestamp_readable': entry['timestamp'].isoformat(),
-                        'category': entry['category']
-                    })
-                
-                df = pd.DataFrame(hot_state_data)
-                df.to_csv(file_path, index=False)
-                
-        except Exception as e:
-            self._logger.error(LogCategory.SYSTEM, "Failed to export hot state", error=str(e))
-            # Create empty CSV with headers
-            pd.DataFrame(columns=['key', 'value', 'timestamp', 'timestamp_readable', 'category']).to_csv(file_path, index=False)
+            ])
     
     def _create_export_manifest(self, file_path: Path, exported_files: Dict[str, str]) -> None:
         """Create export manifest with metadata"""
@@ -728,7 +681,7 @@ class StateManager:
         with open(file_path, 'w') as f:
             json.dump(manifest, f, indent=2)
     
-    def upload_to_s3(self, local_files: Dict[str, str], s3_prefix: str = None) -> Dict[str, str]:
+    def upload_to_s3(self, local_files: Dict[str, str], s3_prefix: Optional[str] = None) -> Dict[str, str]:
         """
         Upload CSV files to S3
         
@@ -774,7 +727,7 @@ class StateManager:
             self._logger.error(LogCategory.SYSTEM, "S3 upload failed", error=str(e))
             raise
     
-    def export_and_upload_to_s3(self, s3_prefix: str = None, cleanup_local: bool = True) -> Dict[str, str]:
+    def export_and_upload_to_s3(self, s3_prefix: Optional[str] = None, cleanup_local: bool = True) -> Dict[str, str]:
         """
         Complete workflow: Export SQLite to CSV and upload to S3
         
@@ -803,7 +756,7 @@ class StateManager:
             self._logger.error(LogCategory.SYSTEM, "Export and S3 upload failed", error=str(e))
             raise
     
-    def create_compressed_export(self, export_dir: str = None) -> str:
+    def create_compressed_export(self, export_dir: Optional[str] = None) -> str:
         """
         Create a compressed ZIP file containing all exported CSV files
         
@@ -1001,7 +954,7 @@ class StateManager:
 # CONVENIENCE FUNCTIONS AND FACTORY METHODS
 # =============================================================================
 
-def create_state_manager(db_path: str = None) -> StateManager:
+def create_state_manager(db_path: Optional[str] = None) -> StateManager:
     """
     Factory function to create a StateManager instance
     
@@ -1016,8 +969,8 @@ def create_state_manager(db_path: str = None) -> StateManager:
     
     return StateManager(db_path)
 
-def create_state_manager_with_s3(db_path: str = None, s3_bucket: str = None, 
-                                 aws_access_key: str = None, aws_secret_key: str = None) -> StateManager:
+def create_state_manager_with_s3(db_path: Optional[str] = None, s3_bucket: Optional[str] = None, 
+                                 aws_access_key: Optional[str] = None, aws_secret_key: Optional[str] = None) -> StateManager:
     """
     Factory function to create a StateManager with S3 configuration
     

@@ -50,6 +50,7 @@ class LogLevel(Enum):
 class LogCategory(Enum):
     """Categories for organizing log messages"""
     TRADE_EXECUTION = "trade_execution"
+    RISK_MANAGEMENT = "risk_managenment"
     DECISION_FLOW = "decision_flow"
     MARKET_DATA = "market_data"
     PERFORMANCE = "performance"
@@ -71,11 +72,25 @@ class EventType(Enum):
     ERROR_OCCURRED = "error_occurred"
     LIMIT_BREACHED = "limit_breached"
 
+class DecisionType(Enum):
+    """Types of decision recipes"""
+    STOCK = "stock"
+    INDICATOR = "indicator"
+    POSITION = "position"
+    BOT = "bot"
+    OPPORTUNITY = "opportunity"
+    GENERAL = "general"
+    
 class DecisionResult(Enum):
     """Results from decision evaluation"""
     YES = "yes"
     NO = "no"
     ERROR = "error"
+    
+class AutomationType(Enum):
+    """Types of automations"""
+    SCANNER = "scanner"  # Only runs if bot is under position limits
+    MONITOR = "monitor"  # Only runs if bot has open positions
     
 class AutomationState(Enum):
     """States of automation execution"""
@@ -86,6 +101,55 @@ class AutomationState(Enum):
     ERROR = "error"
     DISABLED = "disabled"
 
+class PositionType(Enum):
+    """Types of positions supported by Option Alpha"""
+    LONG_EQUITY = "long_equity"
+    LONG_CALL = "long_call"
+    LONG_PUT = "long_put"
+    LONG_CALL_SPREAD = "long_call_spread"
+    LONG_PUT_SPREAD = "long_put_spread"
+    SHORT_CALL_SPREAD = "short_call_spread"
+    SHORT_PUT_SPREAD = "short_put_spread"
+    IRON_CONDOR = "iron_condor"
+    IRON_BUTTERFLY = "iron_butterfly"
+    
+class ScanSpeed(Enum):
+    """Automation scan speed determines how frequently scanner and monitor automations run"""
+    FIFTEEN_MINUTES = "15_minutes"
+    FIVE_MINUTES = "5_minutes" 
+    ONE_MINUTE = "1_minute"
+
+class TriggerType(Enum):
+    """Types of automation triggers"""
+    CONTINUOUS = "continuous"
+    DATE = "date"
+    RECURRING = "recurring"
+    MARKET_OPEN = "market_open"
+    MARKET_CLOSE = "market_close"
+    POSITION_OPENED = "position_opened"
+    POSITION_CLOSED = "position_closed"
+    WEBHOOK = "webhook"
+    MANUAL_BUTTON = "manual_button"
+
+class SmartPricing(Enum):
+    """SmartPricing options for order execution"""
+    NORMAL = "normal"
+    FAST = "fast"
+    PATIENT = "patient"
+    OFF = "off"
+    MARKET = "market"
+
+class ComparisonOperator(Enum):
+    """Comparison operators for decision recipes"""
+    GREATER_THAN = "greater_than"
+    GREATER_THAN_OR_EQUAL = "greater_than_or_equal"
+    LESS_THAN = "less_than"
+    LESS_THAN_OR_EQUAL = "less_than_or_equal"
+    EQUAL_TO = "equal_to"
+    ABOVE = "above"
+    BELOW = "below"
+    BETWEEN = "between"
+    
 class PositionState(Enum):
     """States of position lifecycle"""
     PENDING_OPEN = "pending_open"
@@ -142,6 +206,28 @@ class Greeks(Enum):
     THETA = "theta"
     VEGA = "vega"
     RHO = "rho"
+    
+class OptionSide(Enum):
+    """Option position sides"""
+    LONG = "long"
+    SHORT = "short"
+    
+class OptionType(Enum):
+    """Option types"""
+    CALL = "call"
+    PUT = "put"
+
+
+class ExpirationSeries(Enum):
+    """Option expiration series"""
+    ANY_SERIES = "any_series"
+    ONLY_MONTHLYS = "only_monthlys"
+
+class TimeFrame(Enum):
+    """Time frame references"""
+    INTRADAY = "intraday"
+    MARKET_DAYS = "market_days"
+    CALENDAR_DAYS = "calendar_days"
 
 # =============================================================================
 # PERFORMANCE AND ANALYTICS ENUMS
@@ -301,6 +387,34 @@ class ValidationRules:
     MIN_THETA = -10.0
     MAX_VEGA = 100.0
     MIN_VEGA = 0.0
+    
+ 
+ 
+# =============================================================================
+# TECHNICAL INDICATORS
+# =============================================================================
+class TechnicalIndicator(Enum):
+    """Technical indicators supported by Option Alpha"""
+    RSI = "RSI"
+    STOCH_K = "Stoch_K"
+    CCI = "CCI"
+    ADX = "ADX"
+    MOMENTUM = "Momentum"
+    MACD = "MACD"
+    STOCH_RSI = "Stoch_RSI"
+    WILLIAMS_R = "Williams_R"
+    ULTIMATE = "Ultimate"
+    MFI = "MFI"
+    CHANDE = "Chande"
+    SMA = "SMA"
+    EMA = "EMA"
+    TRIMA = "TRIMA"
+    KAMA = "KAMA"
+    ATR = "ATR"
+    BOP = "BOP"
+    CMO = "CMO"
+    DX = "DX"
+    ROC = "ROC"
 
 # =============================================================================
 # ERROR CODES AND MESSAGES

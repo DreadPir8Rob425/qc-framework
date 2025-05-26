@@ -243,6 +243,46 @@ class EventBus:
         self.logger.info(LogCategory.SYSTEM, "Event bus initialized",
                         max_queue_size=max_queue_size, max_workers=max_workers)
     
+    def _process_events(self) -> None:
+        """Process events from the queue"""
+        while self._processing:
+            try:
+                # Get event from queue with timeout
+                priority, timestamp, event = self._event_queue.get(timeout=1)
+                
+                # Convert event_type string to EventType enum if needed
+                if isinstance(event.event_type, str):
+                    event_type = EventType(event.event_type)
+                else:
+                    event_type = event.event_type
+                
+                # Dispatch the event
+                self._dispatch_event(event, event_type)
+                
+                # Mark task as done
+                self._event_queue.task_done()
+                
+                # Update statistics
+                with self._lock:
+                    self._events_processed += 1
+                    
+            except queue.Empty:
+                # Timeout occurred, continue loop
+                continue
+            except Exception as e:
+                self.logger.error(LogCategory.SYSTEM, "Error processing event", error=str(e))
+                continue
+
+    def _dispatch_event(self, event: Event, event_type: EventType) -> None:
+        """Dispatch event to appropriate handlers"""
+        handlers = self._handlers.get(event_type, [])
+        for handler in handlers:
+            try:
+                if handler.can_handle(event_type):
+                    handler.handle_event(event)
+            except Exception as e:
+                self.logger.error(LogCategory.SYSTEM, f"Error in handler {handler.name}: {str(e)}")
+            
     def subscribe(self, event_type: EventType, handler: EventHandler) -> str:
         """Subscribe a handler to an event type"""
         with self._lock:

@@ -11,14 +11,10 @@ import os
 from datetime import datetime, timedelta
 import traceback
 import time
-from typing import Dict, Any, List, Optional
-from oa_framework_core import DecisionEngine, FrameworkLogger, StateManager
-from oa_enums import DecisionResult
+from typing import Callable, Dict, Any, List, Optional
+from oa_framework_core import DecisionEngine, FrameworkLogger, StateManager, OABot, EventBus, Event, EventHandler
+from oa_framework_enums import DecisionResult, EventType, LogLevel, LogCategory, EventType, DecisionResult
 from oa_bot_schema import OABotConfigLoader, OABotConfigValidator, OABotConfigGenerator
-from oa_framework_enums import LogLevel, LogCategory, EventType, DecisionResult
-from oa_framework_core import OABot, FrameworkLogger, StateManager, EventBus, Event
-from oa_enums import EventType
-
         
         
 # Test Results Collection
@@ -75,7 +71,7 @@ class FrameworkTester:
         except:
             pass
     
-    def run_test(self, test_name: str, test_func: callable) -> bool:
+    def run_test(self, test_name: str, test_func: Callable) -> bool:
         """Run a single test with timing and error handling"""
         print(f"\n🧪 Running: {test_name}")
         start_time = datetime.now()
@@ -154,7 +150,7 @@ class FrameworkTester:
     
     def test_enum_validation(self):
         """Test enum validation and utilities"""
-        from oa_enums import (
+        from oa_framework_enums import (
             ScanSpeed, PositionType, LogLevel, EnumValidator,
             get_enum_values, validate_enum_value
         )
@@ -179,7 +175,7 @@ class FrameworkTester:
     def test_logging_system(self):
         """Test the framework logging system"""
         from oa_framework_core import FrameworkLogger
-        from oa_enums import LogLevel, LogCategory
+        from oa_framework_enums import LogLevel, LogCategory
         
         logger = FrameworkLogger("TestLogger", max_entries=100)
         
@@ -253,7 +249,7 @@ class FrameworkTester:
         event_bus = EventBus()
         
         # Create test event handler
-        class TestHandler:
+        class TestHandler(EventHandler):
             def __init__(self):
                 self.events_received = []
             

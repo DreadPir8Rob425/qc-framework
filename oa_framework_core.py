@@ -7,13 +7,13 @@ import logging
 import threading
 import queue
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Callable, Union
+from typing import Dict, List, Any, Optional, Callable, Union, TypedDict
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import uuid
 
 # Import our enums and schema
-from oa_enums import *
+from oa_framework_enums import *
 from oa_constants import *
 from oa_bot_schema import OABotConfigLoader, OABotConfigValidator
 
@@ -236,6 +236,7 @@ class EventBus:
             except Exception as e:
                 self._logger.error(f"Error in handler {handler.__class__.__name__}: {e}")
 
+    
 # =============================================================================
 # LOGGING SYSTEM
 # =============================================================================
@@ -340,7 +341,7 @@ class FrameworkLogger:
             
             return filtered_logs
     
-    def get_summary(self) -> Dict[str, int]:
+    def get_summary(self) ->  Dict[str, Any]:
         """Get summary of log entries by level and category"""
         with self._lock:
             summary = {'levels': {}, 'categories': {}}
@@ -478,7 +479,7 @@ class StateManager:
             return default
     
     # Cold State Methods (Historical Data)
-    def store_cold_state(self, data: Dict[str, Any], category: str, tags: List[str] = None) -> str:
+    def store_cold_state(self, data: Dict[str, Any], category: str, tags: Optional[List[str]] = None) -> str:
         """Store cold state data (historical)"""
         record_id = str(uuid.uuid4())
         tags_str = json.dumps(tags or [])
@@ -495,7 +496,7 @@ class StateManager:
             return record_id
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to store cold state", 
-                             category=category, error=str(e))
+                             storage_category=category, error=str(e))
             raise
     
     def get_cold_state(self, category: str, limit: int = 100, 
@@ -510,10 +511,10 @@ class StateManager:
                 
                 if start_date:
                     query += ' AND timestamp >= ?'
-                    params.append(start_date.timestamp())
+                    params.append(str(start_date.timestamp()))
                 
                 query += ' ORDER BY timestamp DESC LIMIT ?'
-                params.append(limit)
+                params.append(str(limit))
                 
                 cursor.execute(query, params)
                 results = cursor.fetchall()
@@ -529,7 +530,7 @@ class StateManager:
                 ]
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to get cold state", 
-                             category=category, error=str(e))
+                             storage_category=category, error=str(e))
             return []
     
     # Position Management
@@ -794,7 +795,7 @@ class PositionManager:
                             "Failed to open position", error=str(e))
             return None
     
-    def close_position(self, position_id: str, close_config: Dict[str, Any] = None) -> bool:
+    def close_position(self, position_id: str, close_config: Optional[Dict[str, Any]] = None) -> bool:
         """
         Close an existing position.
         This is a stub implementation for Phase 0.
