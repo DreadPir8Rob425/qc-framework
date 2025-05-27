@@ -150,8 +150,8 @@ class Position:
     """Represents a complete trading position (single or multi-leg)"""
     id: str
     symbol: str
-    position_type: PositionType  # 'long_call', 'iron_condor', etc.
-    state: PositionState  # 'OPEN', 'CLOSED', 'PENDING_OPEN', etc.
+    position_type: str  # Use string to avoid circular imports  
+    state: str  # Use string instead of enum to avoid circular import issues
     opened_at: datetime
     quantity: int
     entry_price: float
@@ -252,7 +252,7 @@ class Position:
 
     def close_position(self, exit_price: Optional[float] = None, exit_reason: str = "Manual") -> None:
         """Close the position and calculate final P&L"""
-        self.state = PositionState.CLOSED
+        self.state = "closed"
         self.closed_at = datetime.now()
         self.exit_reason = exit_reason
         
@@ -569,8 +569,8 @@ def create_test_position(symbol: str = "SPY", position_type: PositionType = Posi
     return Position(
         id=str(uuid.uuid4()),
         symbol=symbol,
-        position_type=position_type,
-        state=PositionState.OPEN,
+        position_type=position_type.value,
+        state="open",
         opened_at=datetime.now(),
         quantity=1,
         entry_price=100.0,

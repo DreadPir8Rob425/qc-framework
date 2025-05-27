@@ -89,8 +89,8 @@ class PositionManager:
             position = Position(
                 id=str(uuid.uuid4()),
                 symbol=config.get('symbol', 'SPY'),
-                position_type=position_type,
-                state=PositionState.OPEN,
+                position_type=position_type.value,
+                state="open",
                 opened_at=datetime.now(),
                 quantity=config.get('quantity', 1),
                 entry_price=float(config.get('entry_price', 100.0)),
@@ -147,7 +147,7 @@ class PositionManager:
             # FIXED: Check if position is actually open using proper comparison
             current_state = position.state
             if hasattr(current_state, 'value'):
-                state_value = current_state.value
+                state_value = current_state
             else:
                 state_value = str(current_state)
                 
@@ -383,7 +383,7 @@ class PositionManager:
                 'position_id': position.id,
                 'symbol': position.symbol,
                 'action': action,
-                'position_type': position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type),
+                'position_type': position.position_type if hasattr(position.position_type, 'value') else str(position.position_type),
                 'quantity': position.quantity,
                 'price': price or (position.exit_price if action == "CLOSE" else position.entry_price),
                 'pnl': position.realized_pnl if action == "CLOSE" else 0.0,
@@ -450,7 +450,7 @@ class PositionManager:
             # Add position breakdown by type
             position_types = {}
             for position in open_positions + closed_positions:
-                pos_type = position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type)
+                pos_type = position.position_type if hasattr(position.position_type, 'value') else str(position.position_type)
                 if pos_type not in position_types:
                     position_types[pos_type] = {'count': 0, 'pnl': 0.0}
                 position_types[pos_type]['count'] += 1
@@ -488,8 +488,8 @@ class PositionManager:
                 row = {
                     'position_id': position.id,
                     'symbol': position.symbol,
-                    'position_type': position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type),
-                    'state': position.state.value if hasattr(position.state, 'value') else str(position.state),
+                    'position_type': position.position_type if hasattr(position.position_type, 'value') else str(position.position_type),
+                    'state': position.state if hasattr(position.state, 'value') else str(position.state),
                     'quantity': position.quantity,
                     'entry_price': position.entry_price,
                     'current_price': position.current_price,
