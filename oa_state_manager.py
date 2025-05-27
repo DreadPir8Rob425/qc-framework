@@ -248,11 +248,45 @@ class StateManager:
                              storage_category=category, error=str(e))
             return []
     
+    
+    
     def store_position(self, position) -> None:
-        """Store position in database"""
+        """Store position in database with proper JSON serialization"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                
+                # Prepare position data for JSON storage using the new method
+                position_data = {
+                    'quantity': position.quantity,
+                    'entry_price': position.entry_price,
+                    'current_price': position.current_price,
+                    'unrealized_pnl': position.unrealized_pnl,
+                    'realized_pnl': position.realized_pnl,
+                    'exit_price': position.exit_price,
+                    'exit_reason': getattr(position, 'exit_reason', None),
+                    'automation_source': getattr(position, 'automation_source', None),
+                    'legs': []
+                }
+                
+                # Handle legs properly
+                if hasattr(position, 'legs') and position.legs:
+                    for leg in position.legs:
+                        leg_data = {
+                            'option_type': leg.option_type,
+                            'side': leg.side,
+                            'strike': leg.strike,
+                            'expiration': leg.expiration.isoformat() if leg.expiration else None,
+                            'quantity': leg.quantity,
+                            'entry_price': leg.entry_price,
+                            'current_price': leg.current_price,
+                            'delta': getattr(leg, 'delta', 0.0),
+                            'gamma': getattr(leg, 'gamma', 0.0),
+                            'theta': getattr(leg, 'theta', 0.0),
+                            'vega': getattr(leg, 'vega', 0.0)
+                        }
+                        position_data['legs'].append(leg_data)
+                
                 cursor.execute('''
                     INSERT OR REPLACE INTO positions 
                     (id, symbol, position_type, state, data, opened_at, closed_at, tags)
@@ -260,32 +294,9 @@ class StateManager:
                 ''', (
                     position.id,
                     position.symbol,
-                    position.position_type.value,
-                    position.state.value,
-                    json.dumps({
-                        'quantity': position.quantity,
-                        'entry_price': position.entry_price,
-                        'current_price': position.current_price,
-                        'unrealized_pnl': position.unrealized_pnl,
-                        'realized_pnl': position.realized_pnl,
-                        'exit_price': position.exit_price,
-                        'legs': [
-                            {
-                                'option_type': leg.option_type.value,
-                                'side': leg.side.value,
-                                'strike': leg.strike,
-                                'expiration': leg.expiration.isoformat(),
-                                'quantity': leg.quantity,
-                                'entry_price': leg.entry_price,
-                                'current_price': leg.current_price,
-                                'delta': leg.delta,
-                                'gamma': leg.gamma,
-                                'theta': leg.theta,
-                                'vega': leg.vega
-                            }
-                            for leg in position.legs
-                        ]
-                    }),
+                    position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type),
+                    position.state.value if hasattr(position.state, 'value') else str(position.state),
+                    json.dumps(position_data),  # Use standard json.dumps since data is already prepared
                     position.opened_at.timestamp(),
                     position.closed_at.timestamp() if position.closed_at else None,
                     json.dumps(position.tags)
@@ -296,8 +307,10 @@ class StateManager:
             
         except Exception as e:
             self._logger.error(LogCategory.SYSTEM, "Failed to store position", 
-                             position_id=position.id, error=str(e))
+                            position_id=position.id, error=str(e))
             raise
+    
+    
     
     def get_positions(self, state: Optional[PositionState] = None, 
                      symbol: Optional[str] = None) -> List:
@@ -1041,6 +1054,32 @@ def prepare_for_json_storage(data):
         return list(data)
     else:
         return data
+    
+def _prepare_object_for_json(self, obj: Any) -> Any:
+    """
+    Prepare any object for JSON serialization.
+    Handles MarketData objects and other complex types.
+    """
+    if obj is None:
+        return None
+    elif hasattr(obj, 'to_dict'):
+        # Use the to_dict method if available
+        return obj.to_dict()
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: self._prepare_object_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [self._prepare_object_for_json(item) for item in obj]
+    elif isinstance(obj, set):
+        return list(obj)
+    elif hasattr(obj, 'value'):  # Handle enums
+        return obj.value
+    elif isinstance(obj, (int, float, str, bool)):
+        return obj
+    else:
+        # Convert to string as fallback
+        return str(obj)
     
 # =============================================================================
 # EXAMPLE USAGE AND TESTING

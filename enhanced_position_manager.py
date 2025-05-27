@@ -1,5 +1,5 @@
-# Option Alpha Framework - Enhanced Position Manager
-# Integrated with SQLite StateManager, replaces position_csv_handler functionality
+# Option Alpha Framework - Enhanced Position Manager (FIXED)
+# Fixed version with proper JSON serialization and P&L calculation
 
 import logging
 import json
@@ -41,8 +41,10 @@ class PositionManager:
             
             # Validate position
             if position is None:
-                self.logger.error(LogCategory.TRADE_EXECUTION, "Position validation failed", config=position_config)
+                self.logger.error(LogCategory.TRADE_EXECUTION, "Position creation failed",
+                            config=position_config)
                 return None
+                
             validation_errors = self._validate_position(position)
             if validation_errors:
                 self.logger.error(LogCategory.TRADE_EXECUTION, "Position validation failed",
@@ -72,7 +74,6 @@ class PositionManager:
     def _create_position_from_config(self, config: Dict[str, Any], bot_name: Optional[str] = None) -> Optional[Position]:
         """Create Position object from configuration"""
         
-        # Extract basic position info
         try:
             # Ensure we have a valid position type
             strategy_type = config.get('strategy_type', 'long_call')
@@ -117,14 +118,14 @@ class PositionManager:
         if position.entry_price < 0:
             errors.append("Entry price cannot be negative")
         
-        # Add more validation as needed
-        
         return errors
     
+    
+    
     def close_position(self, position_id: str, close_config: Optional[Dict[str, Any]] = None,
-                      exit_reason: str = "Manual", bot_name: Optional[str] = None) -> bool:
+                    exit_reason: str = "Manual", bot_name: Optional[str] = None) -> bool:
         """
-        Close an existing position.
+        Close an existing position - FIXED VERSION.
         
         Args:
             position_id: ID of position to close
@@ -140,40 +141,32 @@ class PositionManager:
             position = self.get_position_by_id(position_id)
             if not position:
                 self.logger.warning(LogCategory.TRADE_EXECUTION, "Position not found for close",
-                                  position_id=position_id)
+                                position_id=position_id)
                 return False
             
-            if position.state != PositionState.OPEN.value:
+            # FIXED: Check if position is actually open using proper comparison
+            current_state = position.state
+            if hasattr(current_state, 'value'):
+                state_value = current_state.value
+            else:
+                state_value = str(current_state)
+                
+            if state_value.lower() != 'open':
                 self.logger.warning(LogCategory.TRADE_EXECUTION, "Position not open",
-                                  position_id=position_id, state=position.state)
+                                position_id=position_id, state=state_value)
                 return False
             
             # Process close configuration
             if close_config:
                 exit_price = close_config.get('exit_price', position.current_price)
-                quantity_to_close = close_config.get('quantity', position.quantity)
             else:
                 exit_price = position.current_price
-                quantity_to_close = position.quantity
             
-            # Handle partial closes (simplified for now - full implementation would split position)
-            if quantity_to_close < position.quantity:
-                self.logger.info(LogCategory.TRADE_EXECUTION, "Partial close requested",
-                               position_id=position_id, quantity_to_close=quantity_to_close,
-                               total_quantity=position.quantity)
-                # For now, close the entire position
-                # TODO: Implement position splitting for partial closes
-            
-            # Close the position
+            # Close the position using the Position method
             position.close_position(exit_price, exit_reason)
             
             # Calculate final P&L
-            if position.legs:
-                # Multi-leg position P&L calculation would go here
-                position.realized_pnl = (exit_price - position.entry_price) * position.quantity
-            else:
-                position.realized_pnl = (exit_price - position.entry_price) * position.quantity
-            
+            position.realized_pnl = (exit_price - position.entry_price) * position.quantity
             position.unrealized_pnl = 0.0
             
             # Update in SQLite
@@ -186,8 +179,8 @@ class PositionManager:
             self._log_trade_record(position, "CLOSE", bot_name, exit_price)
             
             self.logger.info(LogCategory.TRADE_EXECUTION, "Position closed",
-                           position_id=position_id, exit_price=exit_price,
-                           realized_pnl=position.realized_pnl, exit_reason=exit_reason)
+                        position_id=position_id, exit_price=exit_price,
+                        realized_pnl=position.realized_pnl, exit_reason=exit_reason)
             
             return True
             
@@ -195,71 +188,104 @@ class PositionManager:
             self.logger.error(LogCategory.TRADE_EXECUTION, "Failed to close position",
                             position_id=position_id, error=str(e))
             return False
+        
     
     def update_position_prices(self, market_data: Dict[str, Any]) -> None:
         """
-        Update current prices for all open positions.
+        Update current prices for all open positions - COMPREHENSIVE FIX.
         
         Args:
-            market_data: Dictionary with symbol -> price mappings
+            market_data: Dictionary with symbol -> price mappings or MarketData objects
         """
         try:
             open_positions = self.get_open_positions()
+            updated_count = 0
             
             for position in open_positions:
-                updated = False
-                
-                # Update underlying price if available
-                if position.symbol in market_data:
-                    new_price = market_data[position.symbol]
-                    if new_price != position.current_price:
-                        position.current_price = new_price
-                        updated = True
-                
-                # Update option leg prices if available
-                if hasattr(position, 'legs') and position.legs:
-                    for leg in position.legs:
-                        # Create option symbol key for price lookup
-                        option_key = f"{position.symbol}_{leg.strike}_{leg.option_type}_{leg.expiration.strftime('%Y%m%d')}"
-                        if option_key in market_data:
-                            new_leg_price = market_data[option_key]
-                            if new_leg_price != leg.current_price:
-                                leg.current_price = new_leg_price
-                                updated = True
-                
-                # Recalculate P&L if prices updated
-                if updated:
-                    self._recalculate_position_pnl(position)
+                try:
+                    updated = False
                     
-                    # Update in SQLite and cache
-                    self.state_manager.store_position(position)
-                    self._positions_cache[position.id] = position
+                    # Update underlying price if available
+                    if position.symbol in market_data:
+                        market_info = market_data[position.symbol]
+                        
+                        # Handle both MarketData objects and simple price values
+                        new_price = None
+                        if hasattr(market_info, 'price'):
+                            # MarketData object
+                            new_price = float(market_info.price)
+                        elif isinstance(market_info, (int, float)):
+                            # Simple price value
+                            new_price = float(market_info)
+                        elif isinstance(market_info, dict) and 'price' in market_info:
+                            # Dictionary with price key
+                            new_price = float(market_info['price'])
+                        
+                        if new_price is not None and new_price != position.current_price:
+                            position.current_price = new_price
+                            updated = True
+                    
+                    # Recalculate P&L if prices updated
+                    if updated:
+                        self._recalculate_position_pnl(position)
+                        
+                        # Update in SQLite and cache (with error handling)
+                        try:
+                            self.state_manager.store_position(position)
+                            self._positions_cache[position.id] = position
+                            updated_count += 1
+                        except Exception as store_error:
+                            self.logger.error(LogCategory.MARKET_DATA, "Failed to store updated position",
+                                            position_id=position.id, error=str(store_error))
+                            
+                except Exception as pos_error:
+                    self.logger.error(LogCategory.MARKET_DATA, "Failed to update individual position",
+                                    position_id=position.id, error=str(pos_error))
+                    continue
             
-            if open_positions:
+            if updated_count > 0:
                 self.logger.debug(LogCategory.MARKET_DATA, "Position prices updated",
-                                positions_updated=len([p for p in open_positions if p.id in market_data]))
+                                positions_updated=updated_count, total_open=len(open_positions))
                                 
         except Exception as e:
             self.logger.error(LogCategory.MARKET_DATA, "Failed to update position prices",
                             error=str(e))
     
+    
+    
     def _recalculate_position_pnl(self, position: Position) -> None:
-        """Recalculate position P&L based on current prices"""
+        """Recalculate position P&L based on current prices - COMPREHENSIVE FIX"""
         try:
             if hasattr(position, 'legs') and position.legs:
                 # Multi-leg position P&L
                 total_unrealized = 0.0
                 for leg in position.legs:
-                    leg_pnl = leg.unrealized_pnl  # This property calculates based on current vs entry price
+                    # Calculate leg P&L properly without MarketData objects
+                    price_diff = leg.current_price - leg.entry_price
+                    if leg.side == 'short':
+                        price_diff = -price_diff  # Invert for short positions
+                    leg_pnl = price_diff * leg.quantity * 100  # Options are per 100 shares
                     total_unrealized += leg_pnl
                 position.unrealized_pnl = total_unrealized
             else:
-                # Simple position P&L
-                position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
-                
+                # Simple position P&L - FIXED: Only use numeric values
+                if isinstance(position.current_price, (int, float)) and isinstance(position.entry_price, (int, float)):
+                    price_diff = float(position.current_price) - float(position.entry_price)
+                    position.unrealized_pnl = price_diff * position.quantity
+                else:
+                    self.logger.warning(LogCategory.TRADE_EXECUTION, "Invalid price types for P&L calculation",
+                                    position_id=position.id, 
+                                    current_price_type=type(position.current_price).__name__,
+                                    entry_price_type=type(position.entry_price).__name__)
+                    position.unrealized_pnl = 0.0
+                    
         except Exception as e:
             self.logger.error(LogCategory.TRADE_EXECUTION, "Failed to recalculate P&L",
                             position_id=position.id, error=str(e))
+            # Set to zero on error to prevent cascading issues
+            position.unrealized_pnl = 0.0
+            
+            
     
     def get_position_by_id(self, position_id: str) -> Optional[Position]:
         """
@@ -305,8 +331,16 @@ class PositionManager:
         """
         try:
             # Get from SQLite
+            state_enum = None
+            if state:
+                try:
+                    state_enum = PositionState(state)
+                except ValueError:
+                    # Handle case where state might already be an enum
+                    state_enum = state if isinstance(state, PositionState) else None
+                    
             positions = self.state_manager.get_positions(
-                state=PositionState(state) if state else None,
+                state=state_enum,
                 symbol=symbol
             )
             
@@ -416,7 +450,7 @@ class PositionManager:
             # Add position breakdown by type
             position_types = {}
             for position in open_positions + closed_positions:
-                pos_type = position.position_type
+                pos_type = position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type)
                 if pos_type not in position_types:
                     position_types[pos_type] = {'count': 0, 'pnl': 0.0}
                 position_types[pos_type]['count'] += 1
@@ -454,8 +488,8 @@ class PositionManager:
                 row = {
                     'position_id': position.id,
                     'symbol': position.symbol,
-                    'position_type': position.position_type,
-                    'state': position.state,
+                    'position_type': position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type),
+                    'state': position.state.value if hasattr(position.state, 'value') else str(position.state),
                     'quantity': position.quantity,
                     'entry_price': position.entry_price,
                     'current_price': position.current_price,

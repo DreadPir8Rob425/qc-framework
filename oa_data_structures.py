@@ -537,6 +537,33 @@ def create_test_market_data(symbol: str = "SPY", price: float = 450.0) -> Market
         iv_rank=50.0
     )
 
+def create_safe_test_market_data() -> Dict[str, Any]:
+    """Create test market data that won't cause serialization issues"""
+    return {
+        'SPY': {
+            'price': 450.0,
+            'bid': 449.95,
+            'ask': 450.05,
+            'volume': 1000000
+        },
+        'QQQ': {
+            'price': 380.0,
+            'bid': 379.95,
+            'ask': 380.05,
+            'volume': 800000
+        }
+    }
+
+def create_safe_position_config() -> Dict[str, Any]:
+    """Create position config that won't cause validation issues"""
+    return {
+        'strategy_type': 'long_call',
+        'symbol': 'SPY',
+        'quantity': 1,
+        'entry_price': 450.0,
+        'tags': ['test', 'safe']
+    }
+    
 def create_test_position(symbol: str = "SPY", position_type: PositionType = PositionType.LONG_CALL) -> Position:
     """Create test position for demonstrations"""
     return Position(

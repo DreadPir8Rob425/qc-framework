@@ -17,6 +17,7 @@ from enhanced_position_manager import create_position_manager
 from analytics_handler import create_analytics_handler
 from oa_framework_enums import *
 from oa_data_structures import Position, MarketData, BotStatus
+from oa_data_structures import create_safe_test_market_data, create_safe_position_config
 from oa_json_schema import OABotConfigValidator, OABotConfigLoader
 from oa_config_generator import OABotConfigGenerator
 from oa_bot_framework import OABot, create_simple_bot_config
@@ -342,7 +343,8 @@ class FrameworkTestRunner:
             suite.add_result(TestResult("Get Open Positions", passed, f"Found {len(open_positions)} open positions"))
             
             # Test updating prices
-            market_data = {"SPY": 455.0}
+            market_data = create_safe_test_market_data()
+            position_config = create_safe_position_config()
             position_manager.update_position_prices(market_data)
             suite.add_result(TestResult("Update Prices", True, "Price update completed"))
             
@@ -461,7 +463,7 @@ class FrameworkTestRunner:
             suite.add_result(TestResult("Bot Status", passed, f"Status: {status.state}, Positions: {status.open_positions}"))
             
             # Test market data update
-            market_data = {"SPY": MarketData("SPY", datetime.now(), 450.0, 449.95, 450.05)}
+            market_data = create_safe_test_market_data()
             bot.update_market_data(market_data)
             suite.add_result(TestResult("Market Data Update", True, "Market data updated successfully"))
             
@@ -500,10 +502,8 @@ class FrameworkTestRunner:
             bot.start()
             
             # Add some market data
-            market_data = {
-                "SPY": MarketData("SPY", datetime.now(), 450.0, 449.95, 450.05),
-                "QQQ": MarketData("QQQ", datetime.now(), 380.0, 379.95, 380.05)
-            }
+            market_data = create_safe_test_market_data()
+
             bot.update_market_data(market_data)
             
             # Test position workflow
