@@ -1,0 +1,1 @@
+position_id,symbol,position_type,state,quantity,entry_price,current_price,exit_price,unrealized_pnl,realized_pnl,total_pnl,opened_at,closed_at,days_open,tags,leg_count,leg_details

@@ -1,0 +1,109 @@
+{
+  "name": "Simple SPY Long Call Bot",
+  "account": "paper_trading",
+  "group": "Test Strategies",
+  "safeguards": {
+    "capital_allocation": 10000,
+    "daily_positions": 3,
+    "position_limit": 10,
+    "daytrading_allowed": false
+  },
+  "scan_speed": "15_minutes",
+  "symbols": {
+    "type": "static",
+    "list": [
+      "SPY"
+    ]
+  },
+  "automations": [
+    {
+      "name": "Buy SPY Calls Scanner",
+      "description": "Scan for long call opportunities on SPY",
+      "trigger": {
+        "type": "continuous",
+        "automation_type": "scanner"
+      },
+      "actions": [
+        {
+          "type": "decision",
+          "decision": {
+            "recipe_type": "stock",
+            "symbol": "SPY",
+            "price_field": "last_price",
+            "comparison": "greater_than",
+            "value": 400
+          },
+          "yes_path": [
+            {
+              "type": "open_position",
+              "position": {
+                "strategy_type": "long_call",
+                "symbol": "SPY",
+                "expiration": {
+                  "type": "between_days",
+                  "days": 30,
+                  "days_end": 45,
+                  "series": "any_series"
+                },
+                "legs": [
+                  {
+                    "option_type": "call",
+                    "side": "long",
+                    "strike_config": {
+                      "type": "delta",
+                      "delta_range": {
+                        "min": 0.3,
+                        "max": 0.7
+                      },
+                      "selection": "or_closest"
+                    }
+                  }
+                ],
+                "position_size": {
+                  "type": "percent_allocation",
+                  "percent": 5,
+                  "base_type": "allocation"
+                },
+                "price_config": {
+                  "smart_pricing": "normal"
+                },
+                "exit_options": {
+                  "profit_taking": {
+                    "enabled": true,
+                    "percent": 50,
+                    "basis": "debit"
+                  },
+                  "stop_loss": {
+                    "enabled": true,
+                    "percent": 50,
+                    "basis": "debit"
+                  },
+                  "expiration": {
+                    "enabled": true,
+                    "time_before": 7,
+                    "time_unit": "days"
+                  }
+                },
+                "entry_criteria": [
+                  {
+                    "type": "bot_has_capital"
+                  },
+                  {
+                    "type": "max_open_positions",
+                    "value": 5
+                  }
+                ],
+                "position_criteria": [
+                  {
+                    "type": "max_bid_ask_spread",
+                    "value": 0.1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

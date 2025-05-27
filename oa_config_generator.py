@@ -4,7 +4,7 @@
 import json
 from typing import Dict, Any
 
-from oa_enums import *
+from oa_framework_enums import *
 from oa_constants import FrameworkConstants
 
 class OABotConfigGenerator:

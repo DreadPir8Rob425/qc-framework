@@ -1,0 +1,35 @@
+{
+  "export_timestamp": "2025-05-26T19:01:21.355244",
+  "export_type": "sqlite_to_csv",
+  "framework_version": "1.0.0",
+  "database_path": "example_state.db",
+  "exported_files": {
+    "warm_state": "compressed_exports\\warm_state.csv",
+    "cold_state": "compressed_exports\\cold_state.csv",
+    "positions": "compressed_exports\\positions.csv",
+    "positions_summary": "compressed_exports\\positions_summary.csv",
+    "hot_state": "compressed_exports\\hot_state.csv"
+  },
+  "file_info": {
+    "warm_state": {
+      "file_size_bytes": 341,
+      "file_path": "compressed_exports\\warm_state.csv"
+    },
+    "cold_state": {
+      "file_size_bytes": 605,
+      "file_path": "compressed_exports\\cold_state.csv"
+    },
+    "positions": {
+      "file_size_bytes": 61,
+      "file_path": "compressed_exports\\positions.csv"
+    },
+    "positions_summary": {
+      "file_size_bytes": 181,
+      "file_path": "compressed_exports\\positions_summary.csv"
+    },
+    "hot_state": {
+      "file_size_bytes": 267,
+      "file_path": "compressed_exports\\hot_state.csv"
+    }
+  }
+}

@@ -1,0 +1,2 @@
+key,value,timestamp,category,value_parsed,timestamp_readable
+daily_session,"{""bot_start_time"": ""2025-05-26T19:01:21.214355"", ""positions_opened_today"": 3, ""daily_pnl"": 245.5}",1748311281.215263,session,"{'bot_start_time': '2025-05-26T19:01:21.214355', 'positions_opened_today': 3, 'daily_pnl': 245.5}",2025-05-27 02:01:21.215262890

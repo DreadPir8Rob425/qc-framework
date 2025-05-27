@@ -1,0 +1,4 @@
+key,value,timestamp,timestamp_readable,category
+current_spy_price,450.25,1748311281.214121,2025-05-26T19:01:21.214121,hot
+market_regime,"""bullish""",1748311281.214126,2025-05-26T19:01:21.214126,hot
+vix_level,18.5,1748311281.214127,2025-05-26T19:01:21.214127,hot
