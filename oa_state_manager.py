@@ -7,6 +7,7 @@ import json
 import threading
 import uuid
 import os
+from enum import Enum
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass, field
@@ -35,6 +36,52 @@ except ImportError:
 # Import framework components
 from oa_framework_enums import *
 
+# =============================================================================
+# CUSTOM JSON ENCODER FOR FRAMEWORK ENUMS
+# =============================================================================
+
+class FrameworkJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles framework enums and objects"""
+    
+    def default(self, obj):
+        # Handle all enum types
+        if isinstance(obj, Enum):
+            return obj.value
+        
+        # Handle datetime objects
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        
+        # Handle sets
+        if isinstance(obj, set):
+            return list(obj)
+        
+        # Let the base class handle other types
+        return super().default(obj)
+    
+# =============================================================================
+# SAFE JSON SERIALIZATION FUNCTIONS
+# =============================================================================
+
+    def safe_json_dumps(self, obj, **kwargs):
+        """Safely serialize objects to JSON, handling enums and other framework types"""
+        return json.dumps(obj, cls=FrameworkJSONEncoder, **kwargs)
+
+    def prepare_for_json_storage(self, data):
+        """Prepare data for JSON storage by converting enums to values"""
+        if isinstance(data, dict):
+            return {key: prepare_for_json_storage(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [prepare_for_json_storage(item) for item in data]
+        elif isinstance(data, Enum):
+            return data.value
+        elif isinstance(data, datetime):
+            return data.isoformat()
+        elif isinstance(data, set):
+            return list(data)
+        else:
+            return data
+    
 # =============================================================================
 # ENHANCED STATE MANAGER WITH CSV EXPORT
 # =============================================================================

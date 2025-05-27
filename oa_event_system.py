@@ -11,57 +11,11 @@ from enum import Enum
 import uuid
 import time
 
+from oa_framework_enums import *
 from oa_data_structures import Event
 from oa_logging import FrameworkLogger, LogCategory, LogLevel
 
-# =============================================================================
-# EVENT TYPES AND PRIORITIES
-# =============================================================================
 
-class EventType(Enum):
-    """Core event types in the framework"""
-    # Market events
-    MARKET_OPEN = "market_open"
-    MARKET_CLOSE = "market_close"
-    MARKET_DATA_UPDATE = "market_data_update"
-    
-    # Trading events
-    POSITION_OPENED = "position_opened"
-    POSITION_CLOSED = "position_closed"
-    TRADE_EXECUTED = "trade_executed"
-    ORDER_FILLED = "order_filled"
-    ORDER_REJECTED = "order_rejected"
-    
-    # Bot events
-    BOT_STARTED = "bot_started"
-    BOT_STOPPED = "bot_stopped"
-    BOT_ERROR = "bot_error"
-    AUTOMATION_TRIGGERED = "automation_triggered"
-    AUTOMATION_COMPLETED = "automation_completed"
-    
-    # Risk events
-    RISK_LIMIT_BREACHED = "risk_limit_breached"
-    PROFIT_TARGET_HIT = "profit_target_hit"
-    STOP_LOSS_HIT = "stop_loss_hit"
-    
-    # System events
-    SYSTEM_STARTUP = "system_startup"
-    SYSTEM_SHUTDOWN = "system_shutdown"
-    ERROR_OCCURRED = "error_occurred"
-    
-    # Time-based events
-    TIME_TRIGGER = "time_trigger"
-    SCHEDULED_EVENT = "scheduled_event"
-    
-    # Custom events
-    CUSTOM = "custom"
-
-class EventPriority(Enum):
-    """Event processing priorities"""
-    LOW = 1
-    NORMAL = 5
-    HIGH = 10
-    CRITICAL = 20
 
 # =============================================================================
 # EVENT HANDLER INTERFACE
@@ -275,6 +229,14 @@ class EventBus:
 
     def _dispatch_event(self, event: Event, event_type: EventType) -> None:
         """Dispatch event to appropriate handlers"""
+        if isinstance(event_type, str):
+            try:
+                from oa_framework_enums import EventType
+                event_type = EventType(event_type)
+            except ValueError:
+                self.logger.error(LogCategory.SYSTEM, f"Unknown event type string: {event_type}")
+                return
+        
         handlers = self._handlers.get(event_type, [])
         for handler in handlers:
             try:

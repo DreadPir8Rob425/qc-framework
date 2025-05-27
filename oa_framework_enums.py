@@ -58,20 +58,49 @@ class LogCategory(Enum):
     DEBUG = "debug"
 
 class EventType(Enum):
-    """Types of events in the event-driven system"""
+    """Core event types in the framework"""
+    # Market events
     MARKET_OPEN = "market_open"
     MARKET_CLOSE = "market_close"
-    DATA_UPDATE = "data_update"
-    TIME_TRIGGER = "time_trigger"
+    MARKET_DATA_UPDATE = "market_data_update"
+    
+    # Trading events
     POSITION_OPENED = "position_opened"
     POSITION_CLOSED = "position_closed"
-    PROFIT_TARGET_HIT = "profit_target_hit"
-    STOP_LOSS_HIT = "stop_loss_hit"
+    TRADE_EXECUTED = "trade_executed"
+    ORDER_FILLED = "order_filled"
+    ORDER_REJECTED = "order_rejected"
+    
+    # Bot events
     BOT_STARTED = "bot_started"
     BOT_STOPPED = "bot_stopped"
-    ERROR_OCCURRED = "error_occurred"
-    LIMIT_BREACHED = "limit_breached"
+    BOT_ERROR = "bot_error"
+    AUTOMATION_TRIGGERED = "automation_triggered"
+    AUTOMATION_COMPLETED = "automation_completed"
+    
+    # Risk events
+    RISK_LIMIT_BREACHED = "risk_limit_breached"
+    PROFIT_TARGET_HIT = "profit_target_hit"
+    STOP_LOSS_HIT = "stop_loss_hit"
 
+    # System events
+    SYSTEM_STARTUP = "system_startup"
+    SYSTEM_SHUTDOWN = "system_shutdown"
+    ERROR_OCCURRED = "error_occurred"
+    
+    # Time-based events
+    TIME_TRIGGER = "time_trigger"
+    SCHEDULED_EVENT = "scheduled_event"
+    
+    # Custom events
+    CUSTOM = "custom"
+
+class EventPriority(Enum):
+    """Event processing priorities"""
+    LOW = 1
+    NORMAL = 5
+    HIGH = 10
+    CRITICAL = 20
 class DecisionType(Enum):
     """Types of decision recipes"""
     STOCK = "stock"

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 import uuid
-
 from oa_framework_enums import PositionState, PositionType, LogCategory, ErrorCode
 from oa_logging import FrameworkLogger
 from oa_data_structures import Position, OptionLeg, TradeRecord
@@ -71,34 +70,36 @@ class PositionManager:
         """Create Position object from configuration"""
         
         # Extract basic position info
-        position = Position(
-            id=str(uuid.uuid4()),
-            symbol=config.get('symbol', ''),
-            position_type=config.get('strategy_type', 'unknown'),
-            state=PositionState.OPEN.value,
-            opened_at=datetime.now(),
-            quantity=config.get('quantity', 1),
-            entry_price=config.get('entry_price', 0.0),
-            current_price=config.get('entry_price', 0.0),
-            tags=config.get('tags', []),
-            automation_source=bot_name
-        )
-        
-        # Add option legs if they exist
-        legs_config = config.get('legs', [])
-        for leg_config in legs_config:
-            leg = OptionLeg(
-                option_type=leg_config.get('option_type', 'call'),
-                side=leg_config.get('side', 'long'),
-                strike=leg_config.get('strike', 0.0),
-                expiration=datetime.fromisoformat(leg_config.get('expiration', datetime.now().isoformat())),
-                quantity=leg_config.get('quantity', 1),
-                entry_price=leg_config.get('entry_price', 0.0),
-                current_price=leg_config.get('entry_price', 0.0)
+        try:
+            # Ensure we have a valid position type
+            strategy_type = config.get('strategy_type', 'long_call')
+            if isinstance(strategy_type, str):
+                try:
+                    position_type = PositionType(strategy_type)
+                except ValueError:
+                    position_type = PositionType.LONG_CALL  # Default fallback
+            else:
+                position_type = strategy_type
+            
+            # Create position with proper defaults
+            position = Position(
+                id=str(uuid.uuid4()),
+                symbol=config.get('symbol', 'SPY'),
+                position_type=position_type,
+                state=PositionState.OPEN,
+                opened_at=datetime.now(),
+                quantity=config.get('quantity', 1),
+                entry_price=float(config.get('entry_price', 100.0)),
+                current_price=float(config.get('entry_price', 100.0)),
+                tags=config.get('tags', []),
+                automation_source=bot_name
             )
-            position.add_leg(leg)
-        
-        return position
+            
+            return position
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Failed to create position from config: {e}")
+            return None
     
     def _validate_position(self, position: Position) -> List[str]:
         """Validate position data"""
@@ -345,7 +346,7 @@ class PositionManager:
                 'position_id': position.id,
                 'symbol': position.symbol,
                 'action': action,
-                'position_type': position.position_type,
+                'position_type': position.position_type.value if hasattr(position.position_type, 'value') else str(position.position_type),
                 'quantity': position.quantity,
                 'price': price or (position.exit_price if action == "CLOSE" else position.entry_price),
                 'pnl': position.realized_pnl if action == "CLOSE" else 0.0,
@@ -353,7 +354,7 @@ class PositionManager:
                 'tags': position.tags
             }
             
-            # Store in cold state
+            # Store in cold state with safe serialization
             self.state_manager.store_cold_state(
                 trade_record,
                 'trade_records',
