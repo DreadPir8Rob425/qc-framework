@@ -70,7 +70,7 @@ class ComparisonEvaluator:
     
     @staticmethod
     def evaluate_comparison(operator: ComparisonOperator, value1: float, 
-                          value2: float, value3: Optional[float] = None) -> bool:
+                      value2: float, value3: Optional[float] = None) -> bool:
         """
         Evaluate comparison between values
         
@@ -179,7 +179,7 @@ class BaseDecisionEvaluator:
             return default
         return config[key]
     
-    def _validate_symbol_data(self, symbol: str, context: DecisionContext) -> Optional[MarketData]:
+    def _validate_symbol_data(self, symbol: str, context: DecisionContext) -> MarketData:
         """Helper to validate symbol has market data"""
         market_data = context.get_market_data(symbol)
         if not market_data:
