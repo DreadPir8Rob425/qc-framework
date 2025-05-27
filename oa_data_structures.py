@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import uuid
 
+from oa_framework_enums import PositionState, PositionType
+
 # =============================================================================
 # MARKET DATA STRUCTURES
 # =============================================================================
@@ -148,8 +150,8 @@ class Position:
     """Represents a complete trading position (single or multi-leg)"""
     id: str
     symbol: str
-    position_type: str  # 'long_call', 'iron_condor', etc.
-    state: str  # 'OPEN', 'CLOSED', 'PENDING_OPEN', etc.
+    position_type: PositionType  # 'long_call', 'iron_condor', etc.
+    state: PositionState  # 'OPEN', 'CLOSED', 'PENDING_OPEN', etc.
     opened_at: datetime
     quantity: int
     entry_price: float
@@ -250,7 +252,7 @@ class Position:
 
     def close_position(self, exit_price: Optional[float] = None, exit_reason: str = "Manual") -> None:
         """Close the position and calculate final P&L"""
-        self.state = 'CLOSED'
+        self.state = PositionState.CLOSED
         self.closed_at = datetime.now()
         self.exit_reason = exit_reason
         
@@ -535,13 +537,13 @@ def create_test_market_data(symbol: str = "SPY", price: float = 450.0) -> Market
         iv_rank=50.0
     )
 
-def create_test_position(symbol: str = "SPY", position_type: str = "long_call") -> Position:
+def create_test_position(symbol: str = "SPY", position_type: PositionType = PositionType.LONG_CALL) -> Position:
     """Create test position for demonstrations"""
     return Position(
         id=str(uuid.uuid4()),
         symbol=symbol,
         position_type=position_type,
-        state="OPEN",
+        state=PositionState.OPEN,
         opened_at=datetime.now(),
         quantity=1,
         entry_price=100.0,
