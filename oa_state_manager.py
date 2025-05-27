@@ -63,11 +63,11 @@ class FrameworkJSONEncoder(json.JSONEncoder):
 # SAFE JSON SERIALIZATION FUNCTIONS
 # =============================================================================
 
-    def safe_json_dumps(self, obj, **kwargs):
+    def safe_json_dumps(obj, **kwargs):
         """Safely serialize objects to JSON, handling enums and other framework types"""
         return json.dumps(obj, cls=FrameworkJSONEncoder, **kwargs)
 
-    def prepare_for_json_storage(self, data):
+    def prepare_for_json_storage(data):
         """Prepare data for JSON storage by converting enums to values"""
         if isinstance(data, dict):
             return {key: prepare_for_json_storage(value) for key, value in data.items()}

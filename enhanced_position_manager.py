@@ -40,6 +40,10 @@ class PositionManager:
             position = self._create_position_from_config(position_config, bot_name)
             
             # Validate position
+            if position is None:
+                self.logger.error(LogCategory.TRADE_EXECUTION, "Position validation failed",
+                            error=str(e), config=position_config)
+                return None
             validation_errors = self._validate_position(position)
             if validation_errors:
                 self.logger.error(LogCategory.TRADE_EXECUTION, "Position validation failed",
@@ -66,7 +70,7 @@ class PositionManager:
                             error=str(e), config=position_config)
             return None
     
-    def _create_position_from_config(self, config: Dict[str, Any], bot_name: Optional[str] = None) -> Position:
+    def _create_position_from_config(self, config: Dict[str, Any], bot_name: Optional[str] = None) -> Optional[Position]:
         """Create Position object from configuration"""
         
         # Extract basic position info
