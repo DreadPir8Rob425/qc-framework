@@ -11,7 +11,7 @@ from enum import Enum
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass, field
-from oa_framework_enums import LogCategory, PositionState, ErrorCode, OptionType
+from oa_framework_enums import LogCategory
 from oa_logging import FrameworkLogger
 from pathlib import Path
 import tempfile
@@ -312,7 +312,7 @@ class StateManager:
     
     
     
-    def get_positions(self, state: Optional[PositionState] = None, 
+    def get_positions(self, state: Optional[str] = None, 
                      symbol: Optional[str] = None) -> List:
         """Get positions from database with optional filters"""
         try:
@@ -324,7 +324,7 @@ class StateManager:
                 
                 if state:
                     query += ' AND state = ?'
-                    params.append(state.value)
+                    params.append(state)
                 
                 if symbol:
                     query += ' AND symbol = ?'
@@ -363,8 +363,8 @@ class StateManager:
                     position = Position(
                         id=row[0],
                         symbol=row[1],
-                        position_type=PositionType(row[2]),
-                        state=PositionState(row[3]),
+                        position_type=row[2],
+                        state=row[3],
                         opened_at=datetime.fromtimestamp(row[5]),
                         quantity=data['quantity'],
                         entry_price=data['entry_price'],
@@ -654,8 +654,8 @@ class StateManager:
                 summary_data.append({
                     'position_id': position.id,
                     'symbol': position.symbol,
-                    'position_type': position.position_type.value,
-                    'state': position.state.value,
+                    'position_type': position.position_type,
+                    'state': str(position.state),
                     'quantity': position.quantity,
                     'entry_price': position.entry_price,
                     'current_price': position.current_price,

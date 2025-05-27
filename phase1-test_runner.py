@@ -285,7 +285,7 @@ class FrameworkTestRunner:
                 id="test_pos_1",
                 symbol="SPY",
                 position_type=PositionType.LONG_CALL.value,
-                state=PositionState.OPEN.value,
+                state="open",
                 opened_at=datetime.now() - timedelta(days=2),
                 quantity=1,
                 entry_price=100.0,

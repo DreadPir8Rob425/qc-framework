@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import uuid
 
-from oa_framework_enums import PositionState, PositionType
+from oa_framework_enums import PositionType
 
 # =============================================================================
 # MARKET DATA STRUCTURES

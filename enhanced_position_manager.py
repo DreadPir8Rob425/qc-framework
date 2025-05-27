@@ -363,11 +363,11 @@ class PositionManager:
     
     def get_open_positions(self, symbol: Optional[str] = None, bot_name: Optional[str] = None) -> List[Position]:
         """Get all open positions with optional filters"""
-        return self.get_positions(state=PositionState.OPEN.value, symbol=symbol, bot_name=bot_name)
+        return self.get_positions(state="open", symbol=symbol, bot_name=bot_name)
     
     def get_closed_positions(self, symbol: Optional[str] = None, bot_name: Optional[str] = None) -> List[Position]:
         """Get all closed positions with optional filters"""
-        return self.get_positions(state=PositionState.CLOSED.value, symbol=symbol, bot_name=bot_name)
+        return self.get_positions(state="closed", symbol=symbol, bot_name=bot_name)
     
     def get_positions_by_symbol(self, symbol: str, bot_name: Optional[str] = None) -> List[Position]:
         """Get all positions for a specific symbol"""
