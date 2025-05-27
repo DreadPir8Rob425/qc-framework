@@ -332,12 +332,16 @@ class PositionManager:
         try:
             # Get from SQLite
             state_enum = None
+            state_enum = None
             if state:
                 try:
                     state_enum = PositionState(state)
                 except ValueError:
-                    # Handle case where state might already be an enum
-                    state_enum = state if isinstance(state, PositionState) else None
+                    # If invalid state string, try to match existing states
+                    for pos_state in PositionState:
+                        if pos_state.value.lower() == state.lower():
+                            state_enum = pos_state
+                            break
                     
             positions = self.state_manager.get_positions(
                 state=state_enum,

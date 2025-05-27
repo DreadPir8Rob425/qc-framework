@@ -324,12 +324,14 @@ class StateManager:
                 
                 if state:
                     query += ' AND state = ?'
-                    params.append(state)
+                    # Ensure we pass the string value, not the enum object
+                    state_value = str(state)
+                    params.append(state_value)
                 
                 if symbol:
                     query += ' AND symbol = ?'
                     params.append(symbol)
-                
+                    
                 query += ' ORDER BY opened_at DESC'
                 
                 cursor.execute(query, params)
