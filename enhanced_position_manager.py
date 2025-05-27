@@ -41,8 +41,7 @@ class PositionManager:
             
             # Validate position
             if position is None:
-                self.logger.error(LogCategory.TRADE_EXECUTION, "Position validation failed",
-                            error=str(e), config=position_config)
+                self.logger.error(LogCategory.TRADE_EXECUTION, "Position validation failed", config=position_config)
                 return None
             validation_errors = self._validate_position(position)
             if validation_errors:

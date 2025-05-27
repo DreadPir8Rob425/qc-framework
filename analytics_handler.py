@@ -30,6 +30,37 @@ class AnalyticsHandler:
         self.state_manager = state_manager
         self.logger = logger or FrameworkLogger("AnalyticsHandler")
         
+    def _prepare_for_json_storage(self, data: Any) -> Any:
+        """
+        Prepare data for JSON storage by converting complex objects to serializable formats.
+        
+        Args:
+            data: Data to prepare for JSON serialization
+            
+        Returns:
+            JSON-serializable version of the data
+        """
+        if data is None:
+            return None
+        elif isinstance(data, datetime):
+            return data.isoformat()
+        elif isinstance(data, (list, tuple)):
+            return [self._prepare_for_json_storage(item) for item in data]
+        elif isinstance(data, dict):
+            return {key: self._prepare_for_json_storage(value) for key, value in data.items()}
+        elif isinstance(data, set):
+            return list(data)  # Convert sets to lists
+        elif hasattr(data, 'value') and hasattr(data, 'name'):  # Handle enums
+            return data.value
+        elif hasattr(data, '__dict__'):
+            # Handle custom objects by converting to dict
+            return self._prepare_for_json_storage(data.__dict__)
+        elif isinstance(data, (int, float, str, bool)):
+            return data
+        else:
+            # Convert to string for other types
+            return str(data)
+        
     def calculate_performance_metrics(self, bot_name: Optional[str] = None, 
                                     start_date: Optional[datetime] = None,
                                     end_date: Optional[datetime] = None) -> Dict[str, Any]:
@@ -132,7 +163,7 @@ class AnalyticsHandler:
         except Exception as e:
             self.logger.warning(LogCategory.PERFORMANCE, "Error calculating Sharpe ratio", error=str(e))
             return 0.0
-    
+        
     def generate_trade_analysis(self, symbol: Optional[str] = None,
                               strategy_type: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -225,7 +256,7 @@ class AnalyticsHandler:
             
             # Store analysis with safe serialization
             self.state_manager.store_cold_state(
-                prepare_for_json_storage(analysis),
+                self._prepare_for_json_storage(analysis),
                 'trade_analysis',
                 ['analytics', 'trade_breakdown', symbol or 'all_symbols']
             )
@@ -451,3 +482,4 @@ def create_analytics_handler(state_manager, logger: Optional[FrameworkLogger] = 
         AnalyticsHandler instance
     """
     return AnalyticsHandler(state_manager, logger)
+

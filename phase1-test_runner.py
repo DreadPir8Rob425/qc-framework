@@ -12,11 +12,10 @@ from pathlib import Path
 # Import all framework components
 from oa_logging import FrameworkLogger, LogCategory, LogLevel
 from oa_state_manager import StateManager, create_state_manager
-from oa_event_system import EventBus, Event, EventType
+from oa_event_system import EventBus, Event
 from enhanced_position_manager import create_position_manager
 from analytics_handler import create_analytics_handler
 from oa_framework_enums import *
-from oa_framework_enums import EventType as FrameworkEventType
 from oa_data_structures import Position, MarketData, BotStatus
 from oa_json_schema import OABotConfigValidator, OABotConfigLoader
 from oa_config_generator import OABotConfigGenerator
@@ -239,7 +238,7 @@ class FrameworkTestRunner:
             def test_handler(event):
                 received_events.append(event)
             
-            handler_id = event_bus.subscribe_function([EventType.BOT_STARTED.value], test_handler, "TestHandler")
+            handler_id = event_bus.subscribe_function([EventType.BOT_STARTED], test_handler, "TestHandler")
             suite.add_result(TestResult("Event Subscription", True, f"Handler ID: {handler_id}"))
             
             # Test event publishing and processing

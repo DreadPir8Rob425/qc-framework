@@ -59,28 +59,6 @@ class FrameworkJSONEncoder(json.JSONEncoder):
         # Let the base class handle other types
         return super().default(obj)
     
-# =============================================================================
-# SAFE JSON SERIALIZATION FUNCTIONS
-# =============================================================================
-
-    def safe_json_dumps(obj, **kwargs):
-        """Safely serialize objects to JSON, handling enums and other framework types"""
-        return json.dumps(obj, cls=FrameworkJSONEncoder, **kwargs)
-
-    def prepare_for_json_storage(data):
-        """Prepare data for JSON storage by converting enums to values"""
-        if isinstance(data, dict):
-            return {key: prepare_for_json_storage(value) for key, value in data.items()}
-        elif isinstance(data, list):
-            return [prepare_for_json_storage(item) for item in data]
-        elif isinstance(data, Enum):
-            return data.value
-        elif isinstance(data, datetime):
-            return data.isoformat()
-        elif isinstance(data, set):
-            return list(data)
-        else:
-            return data
     
 # =============================================================================
 # ENHANCED STATE MANAGER WITH CSV EXPORT
@@ -1041,7 +1019,29 @@ def create_state_manager_with_s3(db_path: Optional[str] = None, s3_bucket: Optio
     
     return state_manager
 
+# =============================================================================
+# SAFE JSON SERIALIZATION FUNCTIONS
+# =============================================================================
 
+def safe_json_dumps(obj, **kwargs):
+    """Safely serialize objects to JSON, handling enums and other framework types"""
+    return json.dumps(obj, cls=FrameworkJSONEncoder, **kwargs)
+
+def prepare_for_json_storage(data):
+    """Prepare data for JSON storage by converting enums to values"""
+    if isinstance(data, dict):
+        return {key: prepare_for_json_storage(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [prepare_for_json_storage(item) for item in data]
+    elif isinstance(data, Enum):
+        return data.value
+    elif isinstance(data, datetime):
+        return data.isoformat()
+    elif isinstance(data, set):
+        return list(data)
+    else:
+        return data
+    
 # =============================================================================
 # EXAMPLE USAGE AND TESTING
 # =============================================================================
