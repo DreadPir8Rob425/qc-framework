@@ -337,11 +337,18 @@ class FrameworkTestRunner:
             passed = position is not None and position.symbol == "SPY"
             suite.add_result(TestResult("Open Position", passed, f"Position ID: {position.id if position else 'None'}"))
             
-            # Test getting positions
+           # Test getting open positions BEFORE closing
+            position_manager.invalidate_cache()
             open_positions = position_manager.get_open_positions()
             passed = len(open_positions) >= 1
+            if not passed:
+                # Debug: Let's see what happened
+                all_positions = position_manager.get_positions()
+                self.logger.warning(LogCategory.SYSTEM, f"Expected open positions but found {len(open_positions)}, total positions: {len(all_positions)}")
+                for pos in all_positions:
+                    self.logger.info(LogCategory.SYSTEM, f"Position {pos.id[:8]}: state={pos.state}, symbol={pos.symbol}")
             suite.add_result(TestResult("Get Open Positions", passed, f"Found {len(open_positions)} open positions"))
-            
+
             # Test updating prices
             market_data = create_safe_test_market_data()
             position_config = create_safe_position_config()

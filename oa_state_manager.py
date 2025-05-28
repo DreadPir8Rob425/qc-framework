@@ -325,7 +325,7 @@ class StateManager:
                 if state:
                     query += ' AND state = ?'
                     # Ensure we pass the string value, not the enum object
-                    params.append(str(state))
+                    params.append(state)
                 
                 if symbol:
                     query += ' AND symbol = ?'

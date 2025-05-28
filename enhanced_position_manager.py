@@ -53,9 +53,10 @@ class PositionManager:
             
             # Store position in SQLite
             self.state_manager.store_position(position)
-            
+            # Update cache immediately
             # Update cache
             self._positions_cache[position.id] = position
+            self._cache_dirty = False  # Mark cache as clean since we just updated it
             
             # Log trade record
             self._log_trade_record(position, "OPEN", bot_name)
@@ -174,6 +175,7 @@ class PositionManager:
             
             # Update cache
             self._positions_cache[position.id] = position
+            self._cache_dirty = False  # Mark cache as clean since we just updated it
             
             # Log trade record
             self._log_trade_record(position, "CLOSE", bot_name, exit_price)
@@ -233,6 +235,8 @@ class PositionManager:
                         try:
                             self.state_manager.store_position(position)
                             self._positions_cache[position.id] = position
+                            self._cache_dirty = False  # Mark cache as clean since we just updated it
+            
                             updated_count += 1
                         except Exception as store_error:
                             self.logger.error(LogCategory.MARKET_DATA, "Failed to store updated position",
@@ -330,25 +334,8 @@ class PositionManager:
             List of Position objects
         """
         try:
-            # Convert state string to enum if needed
-            state_enum = None
-            if state:
-                # Import here to avoid circular imports
-                from oa_framework_enums import PositionState
-                try:
-                    state_enum = PositionState(state)
-                except ValueError:
-                    # If invalid state string, try to match existing states
-                    for pos_state in PositionState:
-                        if pos_state.value.lower() == state.lower():
-                            state_enum = pos_state
-                            break
-                    # If still no match, try the string directly
-                    if not state_enum:
-                        state_enum = state
-            
             positions = self.state_manager.get_positions(
-                state=state_enum,
+                state=state,
                 symbol=symbol
             )
             

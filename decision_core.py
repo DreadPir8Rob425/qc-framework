@@ -232,8 +232,8 @@ def create_test_context(symbols: Optional[List[str]] = None) -> DecisionContext:
         test_position = Position(
             id="test_position_1",
             symbol=symbols[0],
-            position_type=PositionType.LONG_CALL,
-            state=PositionState.OPEN,
+            position_type="long_call",
+            state="open",
             opened_at=datetime.now() - timedelta(days=2),
             quantity=1,
             entry_price=100.0,
