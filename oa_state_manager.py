@@ -325,8 +325,7 @@ class StateManager:
                 if state:
                     query += ' AND state = ?'
                     # Ensure we pass the string value, not the enum object
-                    state_value = str(state)
-                    params.append(state_value)
+                    params.append(str(state))
                 
                 if symbol:
                     query += ' AND symbol = ?'
@@ -338,47 +337,59 @@ class StateManager:
                 results = cursor.fetchall()
                 
                 # Import here to avoid circular imports
-                from oa_framework_core import Position, OptionLeg
+                from oa_data_structures import Position, OptionLeg
                 
                 positions = []
                 for row in results:
-                    data = json.loads(row[4])
-                    
-                    # Reconstruct legs
-                    legs = []
-                    for leg_data in data.get('legs', []):
-                        leg = OptionLeg(
-                            option_type=QCOptionRight(leg_data['option_type']),
-                            side=OptionSide(leg_data['side']),
-                            strike=leg_data['strike'],
-                            expiration=datetime.fromisoformat(leg_data['expiration']),
-                            quantity=leg_data['quantity'],
-                            entry_price=leg_data['entry_price'],
-                            current_price=leg_data['current_price'],
-                            delta=leg_data['delta'],
-                            gamma=leg_data['gamma'],
-                            theta=leg_data['theta'],
-                            vega=leg_data['vega']
+                    try:
+                        data = json.loads(row[4])
+                        
+                        # Reconstruct legs
+                        legs = []
+                        for leg_data in data.get('legs', []):
+                            try:
+                                leg = OptionLeg(
+                                    option_type=leg_data['option_type'],
+                                    side=leg_data['side'],
+                                    strike=leg_data['strike'],
+                                    expiration=datetime.fromisoformat(leg_data['expiration']) if leg_data.get('expiration') else datetime.now(),
+                                    quantity=leg_data['quantity'],
+                                    entry_price=leg_data['entry_price'],
+                                    current_price=leg_data.get('current_price', leg_data['entry_price']),
+                                    delta=leg_data.get('delta', 0.0),
+                                    gamma=leg_data.get('gamma', 0.0),
+                                    theta=leg_data.get('theta', 0.0),
+                                    vega=leg_data.get('vega', 0.0)
+                                )
+                                legs.append(leg)
+                            except Exception as leg_error:
+                                self._logger.warning(LogCategory.SYSTEM, "Failed to reconstruct leg", error=str(leg_error))
+                                continue
+                        
+                        position = Position(
+                            id=row[0],
+                            symbol=row[1],
+                            position_type=row[2],
+                            state=row[3],
+                            opened_at=datetime.fromtimestamp(row[5]),
+                            quantity=data.get('quantity', 1),
+                            entry_price=data.get('entry_price', 0.0),
+                            current_price=data.get('current_price', data.get('entry_price', 0.0)),
+                            unrealized_pnl=data.get('unrealized_pnl', 0.0),
+                            realized_pnl=data.get('realized_pnl', 0.0),
+                            legs=legs,
+                            closed_at=datetime.fromtimestamp(row[6]) if row[6] else None,
+                            exit_price=data.get('exit_price'),
+                            exit_reason=data.get('exit_reason'),
+                            automation_source=data.get('automation_source'),
+                            tags=json.loads(row[7]) if row[7] else []
                         )
-                        legs.append(leg)
-                    
-                    position = Position(
-                        id=row[0],
-                        symbol=row[1],
-                        position_type=row[2],
-                        state=row[3],
-                        opened_at=datetime.fromtimestamp(row[5]),
-                        quantity=data['quantity'],
-                        entry_price=data['entry_price'],
-                        current_price=data['current_price'],
-                        unrealized_pnl=data['unrealized_pnl'],
-                        realized_pnl=data['realized_pnl'],
-                        legs=legs,
-                        closed_at=datetime.fromtimestamp(row[6]) if row[6] else None,
-                        exit_price=data.get('exit_price'),
-                        tags=json.loads(row[7])
-                    )
-                    positions.append(position)
+                        positions.append(position)
+                        
+                    except Exception as pos_error:
+                        self._logger.warning(LogCategory.SYSTEM, "Failed to reconstruct position", 
+                                           position_id=row[0], error=str(pos_error))
+                        continue
                 
                 return positions
                 

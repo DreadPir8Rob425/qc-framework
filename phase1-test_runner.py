@@ -18,9 +18,9 @@ from analytics_handler import create_analytics_handler
 from oa_framework_enums import *
 from oa_data_structures import Position, MarketData, BotStatus
 from oa_data_structures import create_safe_test_market_data, create_safe_position_config
-from oa_json_schema import OABotConfigValidator, OABotConfigLoader
 from oa_config_generator import OABotConfigGenerator
 from oa_bot_framework import OABot, create_simple_bot_config
+from oa_bot_schema import OABotConfigValidator, OABotConfigLoader
 
 # =============================================================================
 # TEST RESULT TRACKING

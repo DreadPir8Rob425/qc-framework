@@ -330,10 +330,11 @@ class PositionManager:
             List of Position objects
         """
         try:
-            # Get from SQLite
-            state_enum = None
+            # Convert state string to enum if needed
             state_enum = None
             if state:
+                # Import here to avoid circular imports
+                from oa_framework_enums import PositionState
                 try:
                     state_enum = PositionState(state)
                 except ValueError:
@@ -342,7 +343,10 @@ class PositionManager:
                         if pos_state.value.lower() == state.lower():
                             state_enum = pos_state
                             break
-                    
+                    # If still no match, try the string directly
+                    if not state_enum:
+                        state_enum = state
+            
             positions = self.state_manager.get_positions(
                 state=state_enum,
                 symbol=symbol

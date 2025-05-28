@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 import uuid
 
 from oa_framework_enums import PositionType
+from oa_bot_schema import OABotConfigValidator, OABotConfigLoader
 
 # =============================================================================
 # MARKET DATA STRUCTURES
@@ -250,6 +251,7 @@ class Position:
             if total_quantity > 0:
                 self.current_price = total_value / total_quantity
 
+
     def close_position(self, exit_price: Optional[float] = None, exit_reason: str = "Manual") -> None:
         """Close the position and calculate final P&L"""
         self.state = "closed"
@@ -258,11 +260,14 @@ class Position:
         
         if exit_price is not None:
             self.exit_price = exit_price
+            # Calculate realized P&L based on actual exit price
+            self.realized_pnl = (exit_price - self.entry_price) * self.quantity
         else:
             self.exit_price = self.current_price
+            # Use current unrealized P&L as realized P&L
+            self.realized_pnl = self.unrealized_pnl
         
-        # Move unrealized P&L to realized P&L
-        self.realized_pnl = self.unrealized_pnl
+        # Clear unrealized P&L since position is closed
         self.unrealized_pnl = 0.0
 
 # =============================================================================
