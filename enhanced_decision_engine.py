@@ -1468,6 +1468,6 @@ class EnhancedDecisionEngine:
 
 def create_enhanced_decision_engine(logger: FrameworkLogger, state_manager) -> EnhancedDecisionEngine:
     """Factory function to create enhanced decision engine"""
-    return EnhancedDecisionEngine(logger, state_manager)_
+    return EnhancedDecisionEngine(logger, state_manager)
 
     

@@ -373,8 +373,7 @@ class MarketRegimeDetector:
                 regime_scores[MarketRegime.SIDEWAYS] += 20
             
             # Determine best regime
-            key=regime_scores.get
-            best_regime = max(regime_scores, key)
+            best_regime = max(regime_scores.keys(), key=lambda k: regime_scores[k])
             confidence = regime_scores[best_regime] / 100.0
             
             # Smooth regime changes (require higher confidence to change)
@@ -434,7 +433,7 @@ class VolatilityEnvironmentDetector:
         self._current_environment = VolatilityEnvironment.NORMAL_IV
         self._vol_history: deque = deque(maxlen=100)
     
-    def detect_volatility_environment(self) -> Tuple[VolatilityEnvironment, Dict[str, float]]:
+    def detect_volatility_environment(self) -> Tuple[VolatilityEnvironment, Dict[str, Any]]:
         """
         Detect current volatility environment.
         
@@ -529,15 +528,20 @@ class VolatilityEnvironmentDetector:
         try:
             environment, metrics = self.detect_volatility_environment()
             
+            # Create comprehensive metrics dictionary
+            comprehensive_metrics = metrics.copy()  # Start with numeric metrics
+            
             # Add historical context
             if len(self._vol_history) > 10:
                 recent_envs = [entry['environment'] for entry in list(self._vol_history)[-10:]]
                 env_changes = sum(1 for i in range(1, len(recent_envs)) 
                                 if recent_envs[i] != recent_envs[i-1])
-                metrics['environment_stability'] = 1.0 - (env_changes / len(recent_envs))
+                comprehensive_metrics['environment_stability'] = 1.0 - (env_changes / len(recent_envs))
             
-            metrics['current_environment'] = environment.value
-            return metrics
+            # Add environment as string value
+            comprehensive_metrics['current_environment'] = environment.value
+            
+            return comprehensive_metrics
             
         except Exception as e:
             self.logger.error(LogCategory.MARKET_DATA, "Failed to get volatility metrics", 
