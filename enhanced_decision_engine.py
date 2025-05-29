@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -16,7 +16,6 @@ from oa_framework_enums import (
 )
 from oa_logging import FrameworkLogger
 from oa_data_structures import MarketData, Position
-from decision_core import DecisionContext, DetailedDecisionResult, ComparisonEvaluator
 
 # =============================================================================
 # ENHANCED TECHNICAL INDICATOR ENGINE
@@ -49,18 +48,18 @@ class TechnicalIndicatorEngine:
             Current indicator value or None if insufficient data
         """
         try:
-            # Convert to pandas Series for easier calculation
+            # Convert to pandas Series and ensure it's numeric
             if isinstance(price_data, list):
-                prices = pd.Series(price_data)
+                prices = pd.Series(price_data, dtype=float)
             else:
-                prices = price_data
+                prices = pd.to_numeric(price_data, errors='coerce')
                 
             if len(prices) < period:
                 self.logger.warning(LogCategory.DECISION_FLOW, 
-                                  f"Insufficient data for {indicator_type.value}",
-                                  required=period, available=len(prices))
+                                f"Insufficient data for {indicator_type.value}",
+                                required=period, available=len(prices))
                 return None
-            
+                
             # Route to appropriate calculation method
             if indicator_type == TechnicalIndicator.RSI:
                 return self._calculate_rsi(prices, period)
@@ -101,38 +100,62 @@ class TechnicalIndicatorEngine:
     
     def _calculate_rsi(self, prices: pd.Series, period: int) -> float:
         """Calculate Relative Strength Index"""
+        # Ensure prices is numeric
+        prices = pd.to_numeric(prices, errors='coerce')
         delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         
-        rs = gain / loss
+        # Ensure delta is also numeric
+        delta = pd.to_numeric(delta, errors='coerce').fillna(0)
+        
+        # Now the boolean operations will work
+        gain = delta.copy()
+        gain[gain < 0] = 0
+        gain = gain.rolling(window=period).mean()
+        
+        loss = delta.copy()
+        loss[loss > 0] = 0
+        loss = (-loss).rolling(window=period).mean()
+        
+        # Avoid division by zero
+        rs = gain / (loss + 1e-10)
         rsi = 100 - (100 / (1 + rs))
         return float(rsi.iloc[-1])
-    
+        
     def _calculate_sma(self, prices: pd.Series, period: int) -> float:
         """Calculate Simple Moving Average"""
+        prices = pd.to_numeric(prices, errors='coerce')
         return float(prices.rolling(window=period).mean().iloc[-1])
-    
+
     def _calculate_ema(self, prices: pd.Series, period: int) -> float:
         """Calculate Exponential Moving Average"""
+        prices = pd.to_numeric(prices, errors='coerce')
         return float(prices.ewm(span=period).mean().iloc[-1])
-    
+
     def _calculate_macd(self, prices: pd.Series, 
-                       fast_period: int = 12, slow_period: int = 26,
-                       signal_period: int = 9) -> float:
+                    fast_period: int = 12, slow_period: int = 26,
+                    signal_period: int = 9) -> float:
         """Calculate MACD (Moving Average Convergence Divergence)"""
+        prices = pd.to_numeric(prices, errors='coerce')
         ema_fast = prices.ewm(span=fast_period).mean()
         ema_slow = prices.ewm(span=slow_period).mean()
         macd_line = ema_fast - ema_slow
         return float(macd_line.iloc[-1])
-    
+
     def _calculate_stochastic_k(self, close: pd.Series, high: pd.Series, 
-                               low: pd.Series, period: int) -> float:
+                            low: pd.Series, period: int) -> float:
         """Calculate Stochastic %K"""
+        # Ensure all series are numeric
+        close = pd.to_numeric(close, errors='coerce')
+        high = pd.to_numeric(high, errors='coerce')
+        low = pd.to_numeric(low, errors='coerce')
+        
         lowest_low = low.rolling(window=period).min()
         highest_high = high.rolling(window=period).max()
         
-        stoch_k = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+        denominator = highest_high - lowest_low
+        denominator = denominator.replace(0, 1e-10)
+        
+        stoch_k = 100 * ((close - lowest_low) / denominator)
         return float(stoch_k.iloc[-1])
     
     def _calculate_cci(self, prices: pd.Series, period: int) -> float:
@@ -331,6 +354,79 @@ class MarketDataProvider:
                             error=str(e))
 
 # =============================================================================
+# DECISION CORE CLASSES (moved from obsolete decision_core.py)
+# =============================================================================
+
+@dataclass
+class DecisionContext:
+    """Context information available during decision evaluation"""
+    timestamp: datetime
+    market_data: Dict[str, MarketData]
+    positions: List[Position]
+    bot_stats: Dict[str, Any]
+    market_state: Dict[str, Any]
+    
+    def get_open_positions(self) -> List[Position]:
+        """Get only open positions"""
+        return [p for p in self.positions if p.state == 'open']
+    
+    def get_market_data(self, symbol: str) -> Optional[MarketData]:
+        """Get market data for specific symbol"""
+        return self.market_data.get(symbol)
+
+@dataclass
+class DetailedDecisionResult:
+    """Detailed result from decision evaluation"""
+    result: DecisionResult
+    confidence: float = 1.0
+    reasoning: Optional[str] = None
+    evaluation_time: datetime = field(default_factory=datetime.now)
+    evaluation_data: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def is_yes(self) -> bool:
+        return self.result == DecisionResult.YES
+    
+    @property
+    def is_no(self) -> bool:
+        return self.result == DecisionResult.NO
+    
+    @property
+    def is_error(self) -> bool:
+        return self.result == DecisionResult.ERROR
+
+class ComparisonEvaluator:
+    """Utility class for evaluating comparisons"""
+    
+    @staticmethod
+    def evaluate_comparison(operator: ComparisonOperator, value: float, 
+                          target: float, target2: Optional[float] = None) -> bool:
+        """Evaluate comparison between values"""
+        if operator == ComparisonOperator.GREATER_THAN:
+            return value > target
+        elif operator == ComparisonOperator.GREATER_THAN_OR_EQUAL:
+            return value >= target
+        elif operator == ComparisonOperator.LESS_THAN:
+            return value < target
+        elif operator == ComparisonOperator.LESS_THAN_OR_EQUAL:
+            return value <= target
+        elif operator == ComparisonOperator.EQUAL_TO:
+            return abs(value - target) < 0.0001  # Float comparison with tolerance
+        elif operator == ComparisonOperator.ABOVE:
+            return value > target
+        elif operator == ComparisonOperator.BELOW:
+            return value < target
+        elif operator == ComparisonOperator.BETWEEN:
+            if target2 is None:
+                raise ValueError("BETWEEN comparison requires two values")
+            min_val = min(target, target2)
+            max_val = max(target, target2)
+            return min_val <= value <= max_val
+        else:
+            raise ValueError(f"Unknown comparison operator: {operator}")
+        
+        
+# =============================================================================
 # ENHANCED DECISION EVALUATORS
 # =============================================================================
 
@@ -348,7 +444,13 @@ class EnhancedStockDecisionEvaluator:
             symbol = decision_config.get('symbol')
             price_field = decision_config.get('price_field', 'last_price')
             comparison = ComparisonOperator(decision_config.get('comparison'))
-            value = float(decision_config.get('value'))
+            raw_value = decision_config.get('value')
+            if raw_value is None:
+                return DetailedDecisionResult(
+                    DecisionResult.ERROR,
+                    reasoning=f"Value cannot be None for stock decision on {symbol}"
+                )
+            value = float(raw_value)  # Now safe
             value2 = decision_config.get('value2')
             
             # Get enhanced market data
@@ -531,6 +633,12 @@ class EnhancedDecisionEngine:
             if context is None:
                 context = self._create_enhanced_context()
             
+            if context is None:
+                    return DetailedDecisionResult(
+                        DecisionResult.ERROR,
+                        reasoning="Second value cannot be None for BETWEEN comparison"
+                    )
+                    
             # Handle grouped decisions
             if 'logic_operator' in decision_config:
                 result = self._evaluate_grouped_decision(decision_config, context)
@@ -575,7 +683,7 @@ class EnhancedDecisionEngine:
             )
     
     def _evaluate_indicator_decision(self, decision_config: Dict[str, Any], 
-                                   context: DecisionContext) -> DetailedDecisionResult:
+                               context: DecisionContext) -> DetailedDecisionResult:
         """Enhanced indicator decision evaluation"""
         try:
             symbol = decision_config.get('symbol')
@@ -616,12 +724,24 @@ class EnhancedDecisionEngine:
                 result = current_signal == target_signal
                 reasoning = f"{symbol} {indicator_name} signal: {current_signal} (target: {target_signal})"
             else:
-                # Numeric comparison
+                # Numeric comparison - ADD NULL CHECK HERE
                 comparison = ComparisonOperator(decision_config.get('comparison'))
-                target_value = float(decision_config.get('value'))
+                raw_value = decision_config.get('value')
+                if raw_value is None:
+                    return DetailedDecisionResult(
+                        DecisionResult.ERROR,
+                        reasoning=f"Target value cannot be None for {indicator_name} comparison"
+                    )
+                
+                target_value = float(raw_value)  # Now safe
                 target_value2 = decision_config.get('value2')
                 
                 if comparison == ComparisonOperator.BETWEEN and target_value2:
+                    if target_value2 is None:
+                        return DetailedDecisionResult(
+                            DecisionResult.ERROR,
+                            reasoning="Second value cannot be None for BETWEEN comparison"
+                        )
                     result = ComparisonEvaluator.evaluate_comparison(
                         comparison, indicator_value, target_value, float(target_value2)
                     )
@@ -684,11 +804,18 @@ class EnhancedDecisionEngine:
             return 'neutral'
     
     def _evaluate_position_decision(self, decision_config: Dict[str, Any], 
-                                  context: DecisionContext) -> DetailedDecisionResult:
+                              context: DecisionContext) -> DetailedDecisionResult:
         """Enhanced position decision evaluation"""
         try:
             position_ref = decision_config.get('position_reference', 'current')
             position_field = decision_config.get('position_field')
+            
+            # Add null check for position_field
+            if position_field is None:
+                return DetailedDecisionResult(
+                    DecisionResult.ERROR,
+                    reasoning="Position field cannot be None"
+                )
             
             # Get position
             if position_ref == 'current':
@@ -715,12 +842,24 @@ class EnhancedDecisionEngine:
                     reasoning=f"Cannot extract field {position_field}"
                 )
             
-            # Evaluate comparison
+            # Evaluate comparison - ADD NULL CHECK HERE
             comparison = ComparisonOperator(decision_config.get('comparison'))
-            target_value = float(decision_config.get('value'))
+            raw_value = decision_config.get('value')
+            if raw_value is None:
+                return DetailedDecisionResult(
+                    DecisionResult.ERROR,
+                    reasoning=f"Target value cannot be None for position {position_field} comparison"
+                )
+            
+            target_value = float(raw_value)  # Now safe
             target_value2 = decision_config.get('value2')
             
             if comparison == ComparisonOperator.BETWEEN and target_value2:
+                if target_value2 is None:
+                    return DetailedDecisionResult(
+                        DecisionResult.ERROR,
+                        reasoning="Second value cannot be None for BETWEEN comparison"
+                    )
                 result = ComparisonEvaluator.evaluate_comparison(
                     comparison, field_value, target_value, float(target_value2)
                 )
@@ -747,6 +886,7 @@ class EnhancedDecisionEngine:
             error_msg = f"Position decision failed: {str(e)}"
             self.logger.error(LogCategory.DECISION_FLOW, error_msg)
             return DetailedDecisionResult(DecisionResult.ERROR, reasoning=error_msg)
+        
     
     def _extract_position_field(self, position: Position, field: str) -> Optional[float]:
         """Extract position field value with comprehensive support"""
@@ -813,12 +953,21 @@ class EnhancedDecisionEngine:
             return None
     
     def _evaluate_bot_decision(self, decision_config: Dict[str, Any], 
-                             context: DecisionContext) -> DetailedDecisionResult:
+                         context: DecisionContext) -> DetailedDecisionResult:
         """Enhanced bot decision evaluation"""
         try:
             bot_field = decision_config.get('bot_field', 'open_positions')
             comparison = ComparisonOperator(decision_config.get('comparison'))
-            target_value = float(decision_config.get('value'))
+            
+            # Add null check for value
+            raw_value = decision_config.get('value')
+            if raw_value is None:
+                return DetailedDecisionResult(
+                    DecisionResult.ERROR,
+                    reasoning=f"Target value cannot be None for bot field {bot_field} comparison"
+                )
+            
+            target_value = float(raw_value)  # Now safe
             target_value2 = decision_config.get('value2')
             
             # Extract bot field value
@@ -831,6 +980,11 @@ class EnhancedDecisionEngine:
             
             # Evaluate comparison
             if comparison == ComparisonOperator.BETWEEN and target_value2:
+                if target_value2 is None:
+                    return DetailedDecisionResult(
+                        DecisionResult.ERROR,
+                        reasoning="Second value cannot be None for BETWEEN comparison"
+                    )
                 result = ComparisonEvaluator.evaluate_comparison(
                     comparison, field_value, target_value, float(target_value2)
                 )
@@ -856,6 +1010,7 @@ class EnhancedDecisionEngine:
             error_msg = f"Bot decision failed: {str(e)}"
             self.logger.error(LogCategory.DECISION_FLOW, error_msg)
             return DetailedDecisionResult(DecisionResult.ERROR, reasoning=error_msg)
+        
     
     def _extract_bot_field(self, context: DecisionContext, field: str) -> Optional[float]:
         """Extract bot-level metrics with comprehensive support"""
@@ -903,6 +1058,12 @@ class EnhancedDecisionEngine:
             comparison = ComparisonOperator(decision_config.get('comparison'))
             value = decision_config.get('value')
             value2 = decision_config.get('value2')
+
+            if value is None:
+                return DetailedDecisionResult(
+                    DecisionResult.ERROR,
+                    reasoning="Volatility environment value cannot be None"
+                )
             
             if condition_type == 'market_time':
                 current_value = self._get_market_time_value()
@@ -1023,8 +1184,11 @@ class EnhancedDecisionEngine:
             return hours + (minutes / 60.0)
         return float(time_str)
     
-    def _parse_day_of_week(self, day_str: str) -> float:
+    def _parse_day_of_week(self, day_str: Optional[str]) -> float:
         """Parse day of week to number"""
+        if day_str is None:
+            return 0.0  # Default to Monday
+        
         day_map = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2,
             'thursday': 3, 'friday': 4, 'saturday': 5, 'sunday': 6
@@ -1117,7 +1281,38 @@ class EnhancedDecisionEngine:
             error_msg = f"Grouped decision evaluation failed: {str(e)}"
             self.logger.error(LogCategory.DECISION_FLOW, error_msg)
             return DetailedDecisionResult(DecisionResult.ERROR, reasoning=error_msg)
-    
+
+
+    def _get_indicator_value(self, market_data: EnhancedMarketData, 
+                    indicator_type: TechnicalIndicator, period: int) -> Optional[float]:
+        """Get indicator value (pre-calculated or on-demand)"""
+        
+        # Check for pre-calculated values
+        if indicator_type == TechnicalIndicator.RSI and period == 14:
+            return market_data.rsi_14
+        elif indicator_type == TechnicalIndicator.SMA and period == 20:
+            return market_data.sma_20
+        elif indicator_type == TechnicalIndicator.SMA and period == 50:
+            return market_data.sma_50
+        elif indicator_type == TechnicalIndicator.EMA and period == 12:
+            return market_data.ema_12
+        elif indicator_type == TechnicalIndicator.EMA and period == 26:
+            return market_data.ema_26
+        elif indicator_type == TechnicalIndicator.MACD:
+            return market_data.macd
+        elif indicator_type == TechnicalIndicator.STOCH_K:
+            return market_data.stoch_k
+        
+        # Calculate on demand
+        price_history = self.market_data_provider.get_price_history(market_data.symbol, period + 10)
+        if len(price_history) < period:
+            return None
+            
+        return self.market_data_provider.indicator_engine.calculate_indicator(
+            indicator_type, price_history, period
+        )
+        
+        
     # =============================================================================
     # CACHING AND OPTIMIZATION
     # =============================================================================
@@ -1275,33 +1470,4 @@ def create_enhanced_decision_engine(logger: FrameworkLogger, state_manager) -> E
     """Factory function to create enhanced decision engine"""
     return EnhancedDecisionEngine(logger, state_manager)_
 
-    indicator_value(self, market_data: EnhancedMarketData, 
-                           indicator_type: TechnicalIndicator, period: int) -> Optional[float]:
-        """Get indicator value (pre-calculated or on-demand)"""
-        
-        # Check for pre-calculated values
-        if indicator_type == TechnicalIndicator.RSI and period == 14:
-            return market_data.rsi_14
-        elif indicator_type == TechnicalIndicator.SMA and period == 20:
-            return market_data.sma_20
-        elif indicator_type == TechnicalIndicator.SMA and period == 50:
-            return market_data.sma_50
-        elif indicator_type == TechnicalIndicator.EMA and period == 12:
-            return market_data.ema_12
-        elif indicator_type == TechnicalIndicator.EMA and period == 26:
-            return market_data.ema_26
-        elif indicator_type == TechnicalIndicator.MACD:
-            return market_data.macd
-        elif indicator_type == TechnicalIndicator.STOCH_K:
-            return market_data.stoch_k
-        
-        # Calculate on demand
-        price_history = self.market_data_provider.get_price_history(market_data.symbol, period + 10)
-        if len(price_history) < period:
-            return None
-            
-        return self.market_data_provider.indicator_engine.calculate_indicator(
-            indicator_type, price_history, period
-        )
     
-    def _get
