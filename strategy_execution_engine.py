@@ -12,7 +12,7 @@ import json
 
 from oa_framework_enums import (
     EventType, LogCategory, AutomationState, PositionState, 
-    DecisionResult, TriggerType, ActionType
+    DecisionResult, TriggerType
 )
 from oa_logging import FrameworkLogger
 from oa_data_structures import Event, Position

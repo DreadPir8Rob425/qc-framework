@@ -197,7 +197,7 @@ class SimulatedMarketDataProvider(MarketDataProvider):
         """Check if market is open (simulated)"""
         return self._market_open
     
-    def update_market_data(self, symbol: str, price_change_pct: float = None) -> None:
+    def update_market_data(self, symbol: str, price_change_pct: Optional[float] = None) -> None:
         """Manually update market data (for testing)"""
         if symbol not in self._current_data:
             return
@@ -373,7 +373,8 @@ class MarketRegimeDetector:
                 regime_scores[MarketRegime.SIDEWAYS] += 20
             
             # Determine best regime
-            best_regime = max(regime_scores, key=regime_scores.get)
+            key=regime_scores.get
+            best_regime = max(regime_scores, key)
             confidence = regime_scores[best_regime] / 100.0
             
             # Smooth regime changes (require higher confidence to change)

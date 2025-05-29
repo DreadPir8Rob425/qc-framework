@@ -262,9 +262,11 @@ class MarketDataProvider:
         # Calculate technical indicators
         self._calculate_indicators(symbol)
     
-    def get_current_data(self, symbol: str) -> Optional[EnhancedMarketData]:
+    def get_current_data(self, symbol: Optional[str]) -> Optional[EnhancedMarketData]:
         """Get current market data for symbol"""
-        return self._current_data.get(symbol)
+        if symbol is not None:
+            return self._current_data.get(symbol)
+        return None
     
     def get_price_history(self, symbol: str, bars: int = 50) -> List[float]:
         """Get price history for technical analysis"""
@@ -598,7 +600,7 @@ class EnhancedDecisionEngine:
                 )
             
             # Get pre-calculated indicator or calculate on demand
-            indicator_value = self._get_indicator_value(market_data, indicator_type, period)
+            indicator_value = self._get_indicator_value(market_data, indicator_type, period) 
             
             if indicator_value is None:
                 return DetailedDecisionResult(
@@ -1271,7 +1273,9 @@ class EnhancedDecisionEngine:
 
 def create_enhanced_decision_engine(logger: FrameworkLogger, state_manager) -> EnhancedDecisionEngine:
     """Factory function to create enhanced decision engine"""
-    return EnhancedDecisionEngine(logger, state_manager)_indicator_value(self, market_data: EnhancedMarketData, 
+    return EnhancedDecisionEngine(logger, state_manager)_
+
+    indicator_value(self, market_data: EnhancedMarketData, 
                            indicator_type: TechnicalIndicator, period: int) -> Optional[float]:
         """Get indicator value (pre-calculated or on-demand)"""
         
