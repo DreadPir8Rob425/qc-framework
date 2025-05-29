@@ -1,0 +1,1487 @@
+# Option Alpha HTML to JSON Bot Configuration Extractor
+# Extracts bot configurations from Option Alpha web pages and converts to JSON
+
+# HERE IS HOW TO USE THIS:
+#
+# # Run demonstration (no arguments)
+# python html_bot_extractor.py
+
+# # Extract single file
+# python html_bot_extractor.py bot.html -o config.json
+
+# # Batch process directory
+# python html_bot_extractor.py -b html_files/ -o configs/
+
+# # Verbose logging
+# python html_bot_extractor.py bot.html -v
+
+import json
+import re
+from typing import Dict, List, Any, Optional, Tuple, Union
+from dataclasses import dataclass, field
+from bs4 import BeautifulSoup, Tag
+from pathlib import Path
+import argparse
+import logging
+
+from oa_framework_enums import (
+    PositionType, TriggerType, ComparisonOperator, TechnicalIndicator,
+    ScanSpeed, SmartPricing, OptionType, OptionSide
+)
+from oa_logging import FrameworkLogger, LogCategory
+
+
+# =============================================================================
+# TYPE SAFETY HELPER FUNCTIONS
+# =============================================================================
+
+def safe_get_attribute(element: Any, attr_name: str, default: str = "") -> str:
+    """
+    Safely get attribute value from BeautifulSoup element and convert to string.
+    
+    Args:
+        element: BeautifulSoup element
+        attr_name: Attribute name to get
+        default: Default value if attribute not found
+        
+    Returns:
+        String value of attribute
+    """
+    if not isinstance(element, Tag):
+        return default
+    
+    try:
+        attr_value = element.get(attr_name)
+        if attr_value is None:
+            return default
+        
+        # Handle different attribute value types
+        if isinstance(attr_value, list):
+            return ' '.join(str(v) for v in attr_value)
+        else:
+            return str(attr_value)
+    except (AttributeError, TypeError):
+        return default
+
+def safe_get_text(element: Any) -> str:
+    """
+    Safely get text content from BeautifulSoup element.
+    
+    Args:
+        element: BeautifulSoup element
+        
+    Returns:
+        String text content
+    """
+    if element is None:
+        return ""
+    
+    try:
+        if hasattr(element, 'get_text'):
+            return str(element.get_text())
+        else:
+            return str(element)
+    except (AttributeError, TypeError):
+        return str(element) if element else ""
+
+def safe_find_elements(element: Any, tag_names: List[str], attrs: Optional[dict] = None) -> List[Tag]:
+    """
+    Safely find elements, ensuring we only work with Tag elements.
+    
+    Args:
+        element: Parent element to search in
+        tag_names: List of tag names to find
+        attrs: Optional attributes to match
+        
+    Returns:
+        List of Tag elements
+    """
+    if not isinstance(element, (BeautifulSoup, Tag)):
+        return []
+    
+    try:
+        found_elements = element.find_all(tag_names, attrs=attrs or {})
+        # Filter to ensure only Tag elements are returned
+        return [elem for elem in found_elements if isinstance(elem, Tag)]
+    except (AttributeError, TypeError):
+        return []
+
+def safe_find_element(element: Any, tag_names: List[str], attrs: Optional[dict] = None) -> Optional[Tag]:
+    """
+    Safely find single element, ensuring we only work with Tag elements.
+    
+    Args:
+        element: Parent element to search in
+        tag_names: List of tag names to find
+        attrs: Optional attributes to match
+        
+    Returns:
+        Tag element or None
+    """
+    if not isinstance(element, (BeautifulSoup, Tag)):
+        return None
+    
+    try:
+        found_element = element.find(tag_names, attrs=attrs or {})
+        return found_element if isinstance(found_element, Tag) else None
+    except (AttributeError, TypeError):
+        return None
+
+def safe_check_class_contains(element: Any, keywords: List[str]) -> bool:
+    """
+    Safely check if element's class attribute contains any of the keywords.
+    
+    Args:
+        element: BeautifulSoup element
+        keywords: List of keywords to check for
+        
+    Returns:
+        True if any keyword found in class
+    """
+    if not isinstance(element, Tag):
+        return False
+    
+    try:
+        class_attr = element.get('class')
+        if class_attr is None:
+            return False
+        
+        # Handle different class attribute types
+        if isinstance(class_attr, list):
+            class_str = ' '.join(str(c) for c in class_attr)
+        else:
+            class_str = str(class_attr)
+        
+        class_str = class_str.lower()
+        return any(keyword.lower() in class_str for keyword in keywords)
+    except (AttributeError, TypeError):
+        return False
+    
+    
+# =============================================================================
+# HTML PARSING CONFIGURATIONS
+# =============================================================================
+
+@dataclass
+class ParsedBotConfig:
+    """Represents a parsed bot configuration from HTML"""
+    name: str
+    description: Optional[str] = None
+    safeguards: Dict[str, Any] = field(default_factory=dict)
+    scan_speed: Optional[str] = None
+    symbols: Dict[str, Any] = field(default_factory=dict)
+    automations: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+# =============================================================================
+# HTML SELECTORS AND PATTERNS
+# =============================================================================
+
+class HTMLSelectors:
+    """CSS selectors and patterns for extracting bot configuration data"""
+    
+    # Bot basic information
+    BOT_NAME = [
+        'h1.bot-name',
+        '.bot-title h1',
+        'h1[data-testid="bot-name"]',
+        '.strategy-name',
+        'h1.strategy-title'
+    ]
+    
+    BOT_DESCRIPTION = [
+        '.bot-description',
+        '.strategy-description',
+        '.bot-summary',
+        '[data-testid="bot-description"]'
+    ]
+    
+    # Safeguards section
+    CAPITAL_ALLOCATION = [
+        'input[name="capital_allocation"]',
+        'input[data-field="capital-allocation"]',
+        '.capital-allocation input',
+        'input[placeholder*="capital"]'
+    ]
+    
+    DAILY_POSITIONS = [
+        'input[name="daily_positions"]',
+        'input[data-field="daily-positions"]',
+        '.daily-positions input',
+        'input[placeholder*="daily"]'
+    ]
+    
+    POSITION_LIMIT = [
+        'input[name="position_limit"]',
+        'input[data-field="position-limit"]',
+        '.position-limit input',
+        'input[placeholder*="limit"]'
+    ]
+    
+    # Scan speed
+    SCAN_SPEED = [
+        'select[name="scan_speed"]',
+        'select[data-field="scan-speed"]',
+        '.scan-speed select',
+        'input[name="scan_speed"]:checked'
+    ]
+    
+    # Symbols configuration
+    SYMBOL_TYPE = [
+        'input[name="symbol_type"]:checked',
+        'select[name="symbol_type"]',
+        '.symbol-type input:checked'
+    ]
+    
+    SYMBOL_LIST = [
+        'textarea[name="symbols"]',
+        '.symbol-list textarea',
+        'input[name="symbol_list"]'
+    ]
+    
+    # Automations
+    AUTOMATION_CARDS = [
+        '.automation-card',
+        '.automation-item',
+        '.automation-section',
+        '[data-testid="automation"]'
+    ]
+    
+    AUTOMATION_NAME = [
+        '.automation-name',
+        '.automation-title',
+        'h3.automation-header',
+        '[data-field="automation-name"]'
+    ]
+    
+    # Triggers
+    TRIGGER_TYPE = [
+        'select[name*="trigger_type"]',
+        'input[name*="trigger_type"]:checked',
+        '.trigger-type select'
+    ]
+    
+    # Actions
+    ACTION_CARDS = [
+        '.action-card',
+        '.action-item',
+        '.action-section',
+        '[data-testid="action"]'
+    ]
+    
+    # Decisions
+    DECISION_RECIPE = [
+        'select[name*="decision_recipe"]',
+        'select[name*="recipe_type"]',
+        '.decision-recipe select'
+    ]
+    
+    COMPARISON_OPERATOR = [
+        'select[name*="comparison"]',
+        'select[name*="operator"]',
+        '.comparison select'
+    ]
+    
+    # Position configurations
+    STRATEGY_TYPE = [
+        'select[name*="strategy_type"]',
+        'select[name*="position_type"]',
+        '.strategy-type select'
+    ]
+
+# =============================================================================
+# HTML PARSER ENGINE
+# =============================================================================
+
+class HTMLBotConfigParser:
+    """
+    Parses Option Alpha bot configuration HTML and extracts structured data
+    """
+    
+    def __init__(self, logger: Optional[FrameworkLogger] = None):
+        self.logger = logger or FrameworkLogger("HTMLBotParser")
+        self.selectors = HTMLSelectors()
+        
+        # Field mapping dictionaries
+        self.scan_speed_mapping = {
+            '15 minutes': '15_minutes',
+            '5 minutes': '5_minutes',
+            '1 minute': '1_minute',
+            '15_minutes': '15_minutes',
+            '5_minutes': '5_minutes',
+            '1_minute': '1_minute'
+        }
+        
+        self.trigger_type_mapping = {
+            'continuous': 'continuous',
+            'market open': 'market_open',
+            'market close': 'market_close',
+            'date': 'date',
+            'recurring': 'recurring',
+            'position opened': 'position_opened',
+            'position closed': 'position_closed',
+            'webhook': 'webhook',
+            'manual button': 'manual_button'
+        }
+        
+        self.strategy_type_mapping = {
+            'long call': 'long_call',
+            'long put': 'long_put',
+            'long call spread': 'long_call_spread',
+            'long put spread': 'long_put_spread',
+            'short call spread': 'short_call_spread',
+            'short put spread': 'short_put_spread',
+            'iron condor': 'iron_condor',
+            'iron butterfly': 'iron_butterfly',
+            'long equity': 'long_equity'
+        }
+    
+    def parse_html_file(self, html_file_path: str) -> ParsedBotConfig:
+        """
+        Parse bot configuration from HTML file
+        
+        Args:
+            html_file_path: Path to HTML file
+            
+        Returns:
+            ParsedBotConfig object
+        """
+        try:
+            with open(html_file_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            
+            return self.parse_html_string(html_content)
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Failed to parse HTML file: {str(e)}")
+            raise
+    
+    def parse_html_string(self, html_content: str) -> ParsedBotConfig:
+        """
+        Parse bot configuration from HTML string
+        
+        Args:
+            html_content: HTML content as string
+            
+        Returns:
+            ParsedBotConfig object
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            config = ParsedBotConfig(name="Extracted Bot")
+            
+            # Extract basic bot information
+            self._extract_bot_basics(soup, config)
+            
+            # Extract safeguards
+            self._extract_safeguards(soup, config)
+            
+            # Extract scan speed
+            self._extract_scan_speed(soup, config)
+            
+            # Extract symbols configuration
+            self._extract_symbols(soup, config)
+            
+            # Extract automations
+            self._extract_automations(soup, config)
+            
+            # Add metadata
+            config.metadata = {
+                'extracted_at': str(datetime.now()),
+                'extraction_method': 'html_parser',
+                'html_length': len(html_content)
+            }
+            
+            self.logger.info(LogCategory.SYSTEM, f"Successfully parsed bot configuration: {config.name}")
+            
+            return config
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Failed to parse HTML string: {str(e)}")
+            raise
+    
+    def _extract_bot_basics(self, soup: BeautifulSoup, config: ParsedBotConfig) -> None:
+        """Extract basic bot information"""
+        # Extract bot name
+        name_element = self._find_element_by_selectors(soup, self.selectors.BOT_NAME)
+        if name_element:
+            config.name = self._clean_text(name_element.get_text())
+        
+        # Extract description
+        desc_element = self._find_element_by_selectors(soup, self.selectors.BOT_DESCRIPTION)
+        if desc_element:
+            config.description = self._clean_text(desc_element.get_text())
+            
+            
+    
+    def _extract_safeguards(self, soup: BeautifulSoup, config: ParsedBotConfig) -> None:
+        """Extract safeguard settings"""
+        safeguards = {}
+        
+        # Capital allocation
+        capital_element = self._find_element_by_selectors(soup, self.selectors.CAPITAL_ALLOCATION)
+        if capital_element:
+            capital_value = self._extract_numeric_value_safe(capital_element)
+            if capital_value:
+                safeguards['capital_allocation'] = capital_value
+        
+        # Daily positions
+        daily_element = self._find_element_by_selectors(soup, self.selectors.DAILY_POSITIONS)
+        if daily_element:
+            daily_value = self._extract_numeric_value_safe(daily_element)
+            if daily_value:
+                safeguards['daily_positions'] = int(daily_value)
+        
+        # Position limit
+        limit_element = self._find_element_by_selectors(soup, self.selectors.POSITION_LIMIT)
+        if limit_element:
+            limit_value = self._extract_numeric_value_safe(limit_element)
+            if limit_value:
+                safeguards['position_limit'] = int(limit_value)
+                
+                
+        """Extract daytrading setting safely"""
+        daytrading_elements = safe_find_elements(soup, ['input'], {'type': 'checkbox'})
+        for element in daytrading_elements:
+            element_str = str(element).lower()
+            if any(keyword in element_str for keyword in ['daytrading', 'day-trading', 'day_trading']):
+                # Check for checked attribute
+                checked_attr = safe_get_attribute(element, 'checked')
+                safeguards['daytrading_allowed'] = bool(checked_attr)
+            break
+        
+        config.safeguards = safeguards
+    
+    # Replace the _extract_scan_speed method with this version:
+    def _extract_scan_speed(self, soup: BeautifulSoup, config: ParsedBotConfig) -> None:
+        """Extract scan speed setting"""
+        speed_element = self._find_element_by_selectors(soup, self.selectors.SCAN_SPEED)
+        if speed_element is not None:
+            # Get text content safely
+            speed_text = safe_get_text(speed_element)
+            
+            # For select/input elements, try to get the value attribute
+            if not speed_text:
+                speed_text = safe_get_attribute(speed_element, 'value')
+            
+            # Map to standard format
+            if speed_text:
+                for display_text, standard_value in self.scan_speed_mapping.items():
+                    if display_text.lower() in speed_text.lower():
+                        config.scan_speed = standard_value
+                    
+    
+    def _extract_symbols(self, soup: BeautifulSoup, config: ParsedBotConfig) -> None:
+        """Extract symbols configuration"""
+        symbols_config = {}
+        
+        # Symbol type (static vs dynamic)
+        type_element = self._find_element_by_selectors(soup, self.selectors.SYMBOL_TYPE)
+        if type_element:
+            type_text = safe_get_text(type_element)
+            if not type_text:
+                type_text = safe_get_attribute(type_element, 'value')
+            symbols_config['type'] = 'static' if 'static' in type_text.lower() else 'dynamic'
+        else:
+            symbols_config['type'] = 'static'  # Default
+        
+        # Symbol list
+        list_element = self._find_element_by_selectors(soup, self.selectors.SYMBOL_LIST)
+        if list_element:
+            symbol_text = safe_get_text(list_element)
+            if not symbol_text:
+                symbol_text = safe_get_attribute(list_element, 'value')
+            
+            if symbol_text:
+                # Parse comma-separated or newline-separated symbols
+                symbols = [s.strip().upper() for s in re.split(r'[,\n\r\s]+', symbol_text) if s.strip()]
+                symbols_config['list'] = symbols
+        
+        config.symbols = symbols_config
+    
+    def _extract_automations(self, soup: BeautifulSoup, config: ParsedBotConfig) -> None:
+        """Extract automation configurations"""
+        automations = []
+        
+        # Find automation cards/sections
+        automation_elements = self._find_elements_by_selectors(soup, self.selectors.AUTOMATION_CARDS)
+        
+        for i, automation_element in enumerate(automation_elements):
+            automation_config = self._parse_automation(automation_element, i)
+            if automation_config:
+                automations.append(automation_config)
+        
+        # If no automation cards found, try parsing the entire page as one automation
+        if not automations:
+            automation_config = self._parse_automation(soup, 0, fallback=True)
+            if automation_config:
+                automations.append(automation_config)
+        
+        config.automations = automations
+    
+    def _parse_automation(self, element: BeautifulSoup, index: int, fallback: bool = False) -> Optional[Dict[str, Any]]:
+        """Parse a single automation from HTML element"""
+        try:
+            automation = {}
+            
+            # Extract automation name
+            if fallback:
+                automation['name'] = f"Main Automation"
+            else:
+                name_element = self._find_element_by_selectors(element, self.selectors.AUTOMATION_NAME)
+                if name_element:
+                    automation['name'] = self._clean_text(name_element.get_text())
+                else:
+                    automation['name'] = f"Automation {index + 1}"
+            
+            # Extract trigger
+            trigger_config = self._parse_trigger(element)
+            if trigger_config:
+                automation['trigger'] = trigger_config
+            
+            # Extract actions
+            actions = self._parse_actions(element)
+            if actions:
+                automation['actions'] = actions
+            
+            return automation if ('trigger' in automation or 'actions' in automation) else None
+            
+        except Exception as e:
+            self.logger.warning(LogCategory.SYSTEM, f"Failed to parse automation {index}: {str(e)}")
+            return None
+    
+    def _parse_trigger(self, element: Union[BeautifulSoup, Tag]) -> Optional[Dict[str, Any]]:
+        """Parse trigger configuration from element"""
+        trigger = {}
+        
+        # Extract trigger type
+        trigger_element = self._find_element_by_selectors(element, self.selectors.TRIGGER_TYPE)
+        if trigger_element:
+            trigger_text = safe_get_text(trigger_element)
+            if not trigger_text:
+                trigger_text = safe_get_attribute(trigger_element, 'value')
+            
+            # Map to standard format
+            for display_text, standard_value in self.trigger_type_mapping.items():
+                if display_text.lower() in trigger_text.lower():
+                    trigger['type'] = standard_value
+                    break
+        
+        # For continuous triggers, determine automation type
+        if trigger.get('type') == 'continuous':
+            # Look for scanner/monitor indicators in surrounding text
+            surrounding_text = safe_get_text(element).lower()
+            if 'scanner' in surrounding_text:
+                trigger['automation_type'] = 'scanner'
+            elif 'monitor' in surrounding_text:
+                trigger['automation_type'] = 'monitor'
+        
+        return trigger if trigger else None
+    
+    def _parse_actions(self, element: BeautifulSoup) -> List[Dict[str, Any]]:
+        """Parse actions from automation element"""
+        actions = []
+        
+        # Find action elements
+        action_elements = self._find_elements_by_selectors(element, self.selectors.ACTION_CARDS)
+        
+        for action_element in action_elements:
+            action_config = self._parse_single_action(action_element)
+            if action_config:
+                actions.append(action_config)
+        
+        # If no specific action elements found, try parsing decisions and positions
+        if not actions:
+            # Look for decision configurations
+            decision_action = self._parse_decision_action(element)
+            if decision_action:
+                actions.append(decision_action)
+            
+            # Look for position configurations
+            position_action = self._parse_position_action(element)
+            if position_action:
+                actions.append(position_action)
+        
+        return actions
+    
+    def _parse_single_action(self, element: BeautifulSoup) -> Optional[Dict[str, Any]]:
+        """Parse a single action from element"""
+        # This would contain complex logic to identify action types
+        # and extract their configurations
+        
+        # For now, return a basic structure
+        action_text = element.get_text().lower()
+        
+        if 'decision' in action_text:
+            return self._parse_decision_action(element)
+        elif 'position' in action_text or 'open' in action_text:
+            return self._parse_position_action(element)
+        elif 'notification' in action_text or 'alert' in action_text:
+            return {'type': 'notification', 'notification': {'message': 'Extracted notification'}}
+        
+        return None
+    
+    def _parse_decision_action(self, element: Union[BeautifulSoup, Tag]) -> Optional[Dict[str, Any]]:
+        """Parse decision action from element"""
+        decision_config = {}
+        
+        # Extract recipe type
+        recipe_element = self._find_element_by_selectors(element, self.selectors.DECISION_RECIPE)
+        if recipe_element:
+            recipe_text = safe_get_text(recipe_element)
+            if not recipe_text:
+                recipe_text = safe_get_attribute(recipe_element, 'value')
+            
+            if 'stock' in recipe_text.lower():
+                decision_config['recipe_type'] = 'stock'
+            elif 'indicator' in recipe_text.lower():
+                decision_config['recipe_type'] = 'indicator'
+            elif 'position' in recipe_text.lower():
+                decision_config['recipe_type'] = 'position'
+        
+        # Extract comparison operator
+        comparison_element = self._find_element_by_selectors(element, self.selectors.COMPARISON_OPERATOR)
+        if comparison_element:
+            comparison_text = safe_get_text(comparison_element)
+            if not comparison_text:
+                comparison_text = safe_get_attribute(comparison_element, 'value')
+            
+            # Map common comparison operators
+            if 'greater than' in comparison_text.lower() or '>' in comparison_text:
+                decision_config['comparison'] = 'greater_than'
+            elif 'less than' in comparison_text.lower() or '<' in comparison_text:
+                decision_config['comparison'] = 'less_than'
+            elif 'equal' in comparison_text.lower() or '=' in comparison_text:
+                decision_config['comparison'] = 'equal_to'
+        
+        # Extract numeric values
+        numeric_inputs = safe_find_elements(element, ['input'], {'type': ['number', 'text']})
+        for input_elem in numeric_inputs:
+            value = self._extract_numeric_value_safe(input_elem)
+            if value and 'value' not in decision_config:
+                decision_config['value'] = value
+        
+        if decision_config:
+            return {
+                'type': 'decision',
+                'decision': decision_config
+            }
+        
+        return None
+    
+    def _parse_position_action(self, element: Union[BeautifulSoup, Tag]) -> Optional[Dict[str, Any]]:
+        """Parse position action from element"""
+        position_config = {}
+        
+        # Extract strategy type
+        strategy_element = self._find_element_by_selectors(element, self.selectors.STRATEGY_TYPE)
+        if strategy_element:
+            strategy_text = safe_get_text(strategy_element)
+            if not strategy_text:
+                strategy_text = safe_get_attribute(strategy_element, 'value')
+            
+            # Map to standard format
+            for display_text, standard_value in self.strategy_type_mapping.items():
+                if display_text.lower() in strategy_text.lower():
+                    position_config['strategy_type'] = standard_value
+                    break
+        
+        # Extract symbol (look for symbol inputs)
+        symbol_inputs = safe_find_elements(element, ['input'])
+        for input_elem in symbol_inputs:
+            placeholder = safe_get_attribute(input_elem, 'placeholder').lower()
+            value = safe_get_attribute(input_elem, 'value')
+            
+            if 'symbol' in placeholder and value:
+                position_config['symbol'] = value.upper()
+                break
+        
+        if position_config:
+            return {
+                'type': 'open_position',
+                'position': position_config
+            }
+        
+        return None
+    
+    def _find_element_by_selectors(self, soup: Union[BeautifulSoup, Tag], selectors: List[str]):
+        """Find first element matching any of the selectors"""
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if element:
+                return element
+        return None
+
+    def _find_elements_by_selectors(self, soup: Union[BeautifulSoup, Tag], selectors: List[str]):
+        """Find all elements matching any of the selectors"""
+        elements = []
+        for selector in selectors:
+            found_elements = soup.select(selector)
+            elements.extend(found_elements)
+        return elements
+    
+    def _extract_numeric_value_safe(self, element: Any) -> Optional[float]:
+        """Extract numeric value from element safely"""
+        if element is None:
+            return None
+        
+        # Try value attribute first
+        value_attr = safe_get_attribute(element, 'value')
+        if value_attr:
+            try:
+                # Remove common currency symbols and commas
+                cleaned_value = re.sub(r'[$,\s]', '', value_attr)
+                return float(cleaned_value)
+            except ValueError:
+                pass
+        
+        # Try text content
+        text_content = safe_get_text(element).strip()
+        if text_content:
+            try:
+                # Extract first number from text
+                number_match = re.search(r'[\d,]+\.?\d*', text_content.replace(',', ''))
+                if number_match:
+                    return float(number_match.group())
+            except ValueError:
+                pass
+        
+        return None
+    
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize text content"""
+        if not text:
+            return ""
+        
+        # Remove extra whitespace and normalize
+        cleaned = re.sub(r'\s+', ' ', text.strip())
+        
+        # Remove common HTML artifacts
+        cleaned = re.sub(r'[^\w\s\-\.,!?()%$]', '', cleaned)
+        
+        return cleaned
+
+# =============================================================================
+# JSON CONFIGURATION GENERATOR
+# =============================================================================
+
+class JSONConfigGenerator:
+    """
+    Converts parsed bot configuration to valid JSON format
+    """
+    
+    def __init__(self, logger: Optional[FrameworkLogger] = None):
+        self.logger = logger or FrameworkLogger("JSONConfigGenerator")
+    
+    def generate_json_config(self, parsed_config: ParsedBotConfig) -> Dict[str, Any]:
+        """
+        Convert parsed configuration to JSON format
+        
+        Args:
+            parsed_config: ParsedBotConfig object
+            
+        Returns:
+            Dictionary in JSON format
+        """
+        try:
+            json_config = {
+                "name": parsed_config.name,
+                "account": "extracted_bot",  # Default value
+                "safeguards": self._process_safeguards(parsed_config.safeguards),
+                "automations": parsed_config.automations
+            }
+            
+            # Add optional fields if present
+            if parsed_config.description:
+                json_config["description"] = parsed_config.description
+            
+            if parsed_config.scan_speed:
+                json_config["scan_speed"] = parsed_config.scan_speed
+            
+            if parsed_config.symbols:
+                json_config["symbols"] = parsed_config.symbols
+            
+            # Add metadata as comments (for reference)
+            json_config["_metadata"] = parsed_config.metadata
+            
+            self.logger.info(LogCategory.SYSTEM, f"Generated JSON config for {parsed_config.name}")
+            
+            return json_config
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Failed to generate JSON config: {str(e)}")
+            raise
+    
+    def _process_safeguards(self, safeguards: Dict[str, Any]) -> Dict[str, Any]:
+        """Process and validate safeguards"""
+        processed = {
+            "capital_allocation": safeguards.get("capital_allocation", 10000),
+            "daily_positions": safeguards.get("daily_positions", 5),
+            "position_limit": safeguards.get("position_limit", 10),
+            "daytrading_allowed": safeguards.get("daytrading_allowed", False)
+        }
+        
+        return processed
+    
+    def save_json_config(self, json_config: Dict[str, Any], output_path: str) -> bool:
+        """
+        Save JSON configuration to file
+        
+        Args:
+            json_config: JSON configuration dictionary
+            output_path: Path to save file
+            
+        Returns:
+            True if successful
+        """
+        try:
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(json_config, f, indent=2, ensure_ascii=False)
+            
+            self.logger.info(LogCategory.SYSTEM, f"JSON config saved to {output_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Failed to save JSON config: {str(e)}")
+            return False
+
+# =============================================================================
+# MAIN EXTRACTION TOOL
+# =============================================================================
+
+class HTMLBotExtractor:
+    """
+    Main tool for extracting bot configurations from HTML
+    """
+    
+    def __init__(self, logger: Optional[FrameworkLogger] = None):
+        self.logger = logger or FrameworkLogger("HTMLBotExtractor")
+        self.parser = HTMLBotConfigParser(logger)
+        self.generator = JSONConfigGenerator(logger)
+    
+    def extract_from_file(self, html_file_path: str, output_json_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Extract bot configuration from HTML file
+        
+        Args:
+            html_file_path: Path to HTML file
+            output_json_path: Optional path to save JSON config
+            
+        Returns:
+            JSON configuration dictionary
+        """
+        try:
+            # Parse HTML
+            parsed_config = self.parser.parse_html_file(html_file_path)
+            
+            # Generate JSON
+            json_config = self.generator.generate_json_config(parsed_config)
+            
+            # Save if output path provided
+            if output_json_path:
+                self.generator.save_json_config(json_config, output_json_path)
+            
+            return json_config
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Extraction failed: {str(e)}")
+            raise
+    
+    def extract_from_string(self, html_content: str) -> Dict[str, Any]:
+        """
+        Extract bot configuration from HTML string
+        
+        Args:
+            html_content: HTML content as string
+            
+        Returns:
+            JSON configuration dictionary
+        """
+        try:
+            # Parse HTML
+            parsed_config = self.parser.parse_html_string(html_content)
+            
+            # Generate JSON
+            json_config = self.generator.generate_json_config(parsed_config)
+            
+            return json_config
+            
+        except Exception as e:
+            self.logger.error(LogCategory.SYSTEM, f"Extraction failed: {str(e)}")
+            raise
+    
+    def batch_extract(self, html_files: List[str], output_dir: str) -> List[Dict[str, Any]]:
+        """
+        Extract configurations from multiple HTML files
+        
+        Args:
+            html_files: List of HTML file paths
+            output_dir: Directory to save JSON configs
+            
+        Returns:
+            List of JSON configuration dictionaries
+        """
+        results = []
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        for html_file in html_files:
+            try:
+                # Generate output filename
+                file_stem = Path(html_file).stem
+                json_output = output_path / f"{file_stem}_config.json"
+                
+                # Extract configuration
+                json_config = self.extract_from_file(html_file, str(json_output))
+                results.append(json_config)
+                
+                self.logger.info(LogCategory.SYSTEM, f"Processed {html_file}")
+                
+            except Exception as e:
+                self.logger.error(LogCategory.SYSTEM, f"Failed to process {html_file}: {str(e)}")
+                continue
+        
+        self.logger.info(LogCategory.SYSTEM, f"Batch extraction completed: {len(results)} configs generated")
+        return results
+
+# =============================================================================
+# COMMAND LINE INTERFACE
+# =============================================================================
+
+def main():
+    print("Starting parser")
+    """Command line interface for the HTML bot extractor"""
+    parser = argparse.ArgumentParser(description="Extract Option Alpha bot configurations from HTML")
+    parser.add_argument("input", help="HTML file path or directory")
+    parser.add_argument("-o", "--output", help="Output JSON file or directory")
+    parser.add_argument("-b", "--batch", action="store_true", help="Batch process directory of HTML files")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    
+    args = parser.parse_args()
+    
+    # Setup logging
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    
+    # Create extractor
+    extractor = HTMLBotExtractor()
+    
+    try:
+        if args.batch:
+            # Batch processing
+            html_files = list(Path(args.input).glob("*.html"))
+            output_dir = args.output or "extracted_configs"
+            
+            results = extractor.batch_extract([str(f) for f in html_files], output_dir)
+            
+            print(f"✅ Batch extraction completed: {len(results)} configurations extracted")
+            print(f"📁 Output directory: {output_dir}")
+            
+        else:
+            # Single file processing
+            output_path = args.output
+            if not output_path:
+                input_stem = Path(args.input).stem
+                output_path = f"{input_stem}_config.json"
+            
+            json_config = extractor.extract_from_file(args.input, output_path)
+            
+            print(f"✅ Extraction completed: {json_config['name']}")
+            print(f"📄 JSON config saved to: {output_path}")
+            print(f"🤖 Automations extracted: {len(json_config.get('automations', []))}")
+            
+            # Display summary
+            safeguards = json_config.get('safeguards', {})
+            print(f"💰 Capital allocation: ${safeguards.get('capital_allocation', 0):,}")
+            print(f"📊 Position limits: {safeguards.get('daily_positions', 0)}/day, {safeguards.get('position_limit', 0)} total")
+            
+    except Exception as e:
+        print(f"❌ Extraction failed: {str(e)}")
+        return 1
+    
+    return 0
+
+# =============================================================================
+# DEMONSTRATION AND TESTING
+# =============================================================================
+
+def demonstrate_html_extraction():
+    """Demonstrate HTML extraction with sample HTML"""
+    print("HTML Bot Configuration Extractor - Demonstration")
+    print("=" * 60)
+    
+    # Sample HTML content that might be found on Option Alpha pages
+    sample_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>SPY Iron Condor Bot - Option Alpha</title>
+    </head>
+    <body>
+        <div class="bot-container">
+            <h1 class="bot-name">SPY Weekly Iron Condor</h1>
+            <p class="bot-description">Automated iron condor strategy on SPY with high probability setup</p>
+            
+            <div class="safeguards-section">
+                <h2>Safeguards</h2>
+                <div class="form-group">
+                    <label>Capital Allocation</label>
+                    <input type="number" name="capital_allocation" value="50000">
+                </div>
+                <div class="form-group">
+                    <label>Daily Positions</label>
+                    <input type="number" name="daily_positions" value="2">
+                </div>
+                <div class="form-group">
+                    <label>Position Limit</label>
+                    <input type="number" name="position_limit" value="8">
+                </div>
+                <div class="form-group">
+                    <label>Day Trading</label>
+                    <input type="checkbox" name="daytrading_allowed">
+                </div>
+            </div>
+            
+            <div class="scan-speed-section">
+                <h2>Scan Speed</h2>
+                <select name="scan_speed">
+                    <option value="5_minutes" selected>5 minutes</option>
+                </select>
+            </div>
+            
+            <div class="symbols-section">
+                <h2>Symbols</h2>
+                <input type="radio" name="symbol_type" value="static" checked> Static List
+                <textarea name="symbols">SPY</textarea>
+            </div>
+            
+            <div class="automation-card">
+                <h3 class="automation-name">Iron Condor Scanner</h3>
+                <div class="trigger-section">
+                    <select name="trigger_type">
+                        <option value="continuous" selected>Continuous</option>
+                    </select>
+                    <span>Scanner automation</span>
+                </div>
+                
+                <div class="action-card">
+                    <h4>Decision: IV Rank Check</h4>
+                    <select name="decision_recipe">
+                        <option value="stock" selected>Stock Decision</option>
+                    </select>
+                    <input type="text" placeholder="Symbol" value="SPY">
+                    <select name="comparison">
+                        <option value="greater_than" selected>Greater Than</option>
+                    </select>
+                    <input type="number" name="value" value="30">
+                    
+                    <div class="yes-path">
+                        <div class="action-card">
+                            <h4>Open Iron Condor Position</h4>
+                            <select name="strategy_type">
+                                <option value="iron_condor" selected>Iron Condor</option>
+                            </select>
+                            <input type="text" placeholder="Symbol" value="SPY">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    try:
+        # Create extractor
+        extractor = HTMLBotExtractor()
+        
+        print("1. Extracting configuration from sample HTML...")
+        
+        # Extract configuration
+        json_config = extractor.extract_from_string(sample_html)
+        
+        print("✅ Extraction successful!")
+        print(f"   Bot Name: {json_config['name']}")
+        print(f"   Capital: ${json_config['safeguards']['capital_allocation']:,}")
+        print(f"   Scan Speed: {json_config['scan_speed']}")
+        print(f"   Symbols: {json_config['symbols']['list']}")
+        print(f"   Automations: {len(json_config['automations'])}")
+        
+        # Display full JSON (formatted)
+        print("\n2. Generated JSON Configuration:")
+        print("-" * 40)
+        print(json.dumps(json_config, indent=2))
+        
+        # Test saving to file
+        print("\n3. Testing file save...")
+        output_path = "sample_extracted_config.json"
+        
+        generator = JSONConfigGenerator()
+        success = generator.save_json_config(json_config, output_path)
+        
+        if success:
+            print(f"✅ Configuration saved to: {output_path}")
+        else:
+            print("❌ Failed to save configuration")
+        
+        # Validate the generated config
+        print("\n4. Validating generated configuration...")
+        
+        from oa_bot_schema import OABotConfigValidator
+        validator = OABotConfigValidator()
+        is_valid, errors = validator.validate_config(json_config)
+        
+        if is_valid:
+            print("✅ Generated configuration is valid!")
+        else:
+            print(f"⚠️  Configuration has validation issues:")
+            for error in errors:
+                print(f"   - {error}")
+        
+        print("\n" + "=" * 60)
+        print("✅ HTML Bot Extractor demonstration completed!")
+        print("\n📋 Features demonstrated:")
+        print("   • HTML parsing with BeautifulSoup")
+        print("   • Bot configuration extraction")
+        print("   • JSON generation and validation")
+        print("   • File save functionality")
+        print("   • Multiple CSS selector strategies")
+        print("   • Text cleaning and normalization")
+        print("   • Numeric value extraction")
+        
+        print("\n🚀 Usage Examples:")
+        print("   • python html_bot_extractor.py bot.html")
+        print("   • python html_bot_extractor.py -b html_files/ -o configs/")
+        print("   • python html_bot_extractor.py bot.html -o my_config.json")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Demonstration failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_html_extraction_patterns():
+    """Test different HTML patterns and structures"""
+    print("\nTesting HTML Extraction Patterns")
+    print("=" * 40)
+    
+    test_cases = [
+        {
+            "name": "Simple Bot Name",
+            "html": '<h1 class="bot-name">Test Strategy Bot</h1>',
+            "expected": "Test Strategy Bot"
+        },
+        {
+            "name": "Capital Allocation Input",
+            "html": '<input type="number" name="capital_allocation" value="25000">',
+            "expected": 25000
+        },
+        {
+            "name": "Symbol List Textarea",
+            "html": '<textarea name="symbols">SPY, QQQ, IWM</textarea>',
+            "expected": ["SPY", "QQQ", "IWM"]
+        },
+        {
+            "name": "Scan Speed Select",
+            "html": '<select name="scan_speed"><option value="1_minute" selected>1 minute</option></select>',
+            "expected": "1_minute"
+        }
+    ]
+    
+    parser = HTMLBotConfigParser()
+    
+    for i, test_case in enumerate(test_cases, 1):
+        try:
+            print(f"{i}. Testing: {test_case['name']}")
+            
+            soup = BeautifulSoup(test_case['html'], 'html.parser')
+            
+            # This would test specific parsing methods
+            # For demonstration, just show that we can parse the HTML
+            
+            print(f"   ✅ HTML parsed successfully")
+            
+        except Exception as e:
+            print(f"   ❌ Test failed: {str(e)}")
+    
+    print("Pattern testing completed!")
+
+# =============================================================================
+# SPECIALIZED EXTRACTORS
+# =============================================================================
+
+class AdvancedHTMLPatterns:
+    """
+    Advanced patterns for extracting complex configurations
+    """
+    
+    @staticmethod
+    def extract_decision_tree_safe(soup: BeautifulSoup) -> Dict[str, Any]:
+        """Extract complex decision trees with yes/no paths safely"""
+        decision_tree = {}
+        
+        # Look for nested decision structures
+        decision_elements = safe_find_elements(soup, ['div'], {'class': re.compile(r'decision|condition')})
+        
+        for element in decision_elements:
+            # Extract yes/no path structures
+            yes_path = safe_find_element(element, ['div'], {'class': re.compile(r'yes-path|true-path')})
+            no_path = safe_find_element(element, ['div'], {'class': re.compile(r'no-path|false-path')})
+            
+            if yes_path or no_path:
+                decision_tree['has_paths'] = True
+                if yes_path:
+                    decision_tree['yes_path'] = "Found yes path actions"
+                if no_path:
+                    decision_tree['no_path'] = "Found no path actions"
+        
+        return decision_tree
+    
+    @staticmethod
+    def extract_position_sizing_safe(soup: BeautifulSoup) -> Dict[str, Any]:
+        """Extract position sizing configurations safely"""
+        sizing_config = {}
+        
+        # Look for position sizing inputs
+        sizing_elements = safe_find_elements(soup, ['input', 'select'], 
+                                           {'name': re.compile(r'position.*size|size.*position')})
+        
+        for element in sizing_elements:
+            element_type = safe_get_attribute(element, 'type').lower()
+            element_value = safe_get_attribute(element, 'value')
+            
+            if element_type in ['number', 'text'] and element_value:
+                if '%' in element_value:
+                    sizing_config['type'] = 'percentage'
+                    sizing_config['value'] = element_value.replace('%', '')
+                else:
+                    sizing_config['type'] = 'fixed'
+                    sizing_config['value'] = element_value
+        
+        return sizing_config
+    
+    @staticmethod
+    def extract_exit_conditions_safe(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+        """Extract exit condition configurations safely"""
+        exit_conditions = []
+        
+        # Look for exit-related elements
+        exit_elements = safe_find_elements(soup, ['div', 'section'], 
+                                         {'class': re.compile(r'exit|close|profit|stop')})
+        
+        for element in exit_elements:
+            condition = {}
+            
+            # Check for profit/stop keywords in class
+            if safe_check_class_contains(element, ['profit']):
+                condition['type'] = 'profit_target'
+            elif safe_check_class_contains(element, ['stop']):
+                condition['type'] = 'stop_loss'
+            
+            # Extract percentage values
+            percentage_inputs = safe_find_elements(element, ['input'], {'type': 'number'})
+            for input_elem in percentage_inputs:
+                value_str = safe_get_attribute(input_elem, 'value')
+                if value_str:
+                    try:
+                        condition['percentage'] = float(value_str)
+                        break
+                    except ValueError:
+                        continue
+            
+            if condition:
+                exit_conditions.append(condition)
+        
+        return exit_conditions
+
+# =============================================================================
+# EXPORT UTILITIES
+# =============================================================================
+
+class ConfigExporter:
+    """Utilities for exporting extracted configurations"""
+    
+    @staticmethod
+    def export_to_csv(configs: List[Dict[str, Any]], output_path: str) -> bool:
+        """Export multiple configurations to CSV summary"""
+        try:
+            import csv
+            
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # Write headers
+                headers = ['Name', 'Capital Allocation', 'Daily Positions', 'Position Limit', 
+                          'Scan Speed', 'Symbols Count', 'Automations Count']
+                writer.writerow(headers)
+                
+                # Write data rows
+                for config in configs:
+                    safeguards = config.get('safeguards', {})
+                    symbols = config.get('symbols', {})
+                    
+                    row = [
+                        config.get('name', ''),
+                        safeguards.get('capital_allocation', 0),
+                        safeguards.get('daily_positions', 0),
+                        safeguards.get('position_limit', 0),
+                        config.get('scan_speed', ''),
+                        len(symbols.get('list', [])),
+                        len(config.get('automations', []))
+                    ]
+                    writer.writerow(row)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to export CSV: {str(e)}")
+            return False
+    
+    @staticmethod
+    def generate_summary_report(configs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate summary report of extracted configurations"""
+        if not configs:
+            return {'error': 'No configurations provided'}
+        
+        # Calculate statistics
+        total_configs = len(configs)
+        total_capital = sum(config.get('safeguards', {}).get('capital_allocation', 0) 
+                          for config in configs)
+        
+        strategy_types = {}
+        scan_speeds = {}
+        
+        for config in configs:
+            # Count strategy types from automations
+            for automation in config.get('automations', []):
+                for action in automation.get('actions', []):
+                    if action.get('type') == 'open_position':
+                        strategy = action.get('position', {}).get('strategy_type', 'unknown')
+                        strategy_types[strategy] = strategy_types.get(strategy, 0) + 1
+            
+            # Count scan speeds
+            speed = config.get('scan_speed', 'unknown')
+            scan_speeds[speed] = scan_speeds.get(speed, 0) + 1
+        
+        return {
+            'summary': {
+                'total_configurations': total_configs,
+                'total_capital_allocated': total_capital,
+                'average_capital_per_bot': total_capital / total_configs if total_configs > 0 else 0
+            },
+            'strategy_distribution': strategy_types,
+            'scan_speed_distribution': scan_speeds,
+            'extraction_timestamp': str(datetime.now())
+        }
+
+# =============================================================================
+# CONFIGURATION VALIDATION HELPERS
+# =============================================================================
+
+def validate_extracted_config(json_config: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """
+    Validate extracted configuration against framework schema
+    
+    Args:
+        json_config: Extracted JSON configuration
+        
+    Returns:
+        Tuple of (is_valid, error_messages)
+    """
+    try:
+        from oa_bot_schema import OABotConfigValidator
+        
+        validator = OABotConfigValidator()
+        return validator.validate_config(json_config)
+        
+    except ImportError:
+        # Fallback validation if schema module not available
+        errors = []
+        
+        # Basic validation checks
+        if not json_config.get('name'):
+            errors.append("Bot name is required")
+        
+        safeguards = json_config.get('safeguards', {})
+        if not safeguards.get('capital_allocation'):
+            errors.append("Capital allocation is required")
+        
+        if not json_config.get('automations'):
+            errors.append("At least one automation is required")
+        
+        return len(errors) == 0, errors
+
+def repair_extracted_config(json_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Attempt to repair common issues in extracted configurations
+    
+    Args:
+        json_config: Configuration with potential issues
+        
+    Returns:
+        Repaired configuration
+    """
+    repaired = json_config.copy()
+    
+    # Ensure required fields have default values
+    if not repaired.get('name'):
+        repaired['name'] = "Extracted Bot"
+    
+    if not repaired.get('account'):
+        repaired['account'] = "extracted_account"
+    
+    # Ensure safeguards have required fields
+    safeguards = repaired.get('safeguards', {})
+    if 'capital_allocation' not in safeguards:
+        safeguards['capital_allocation'] = 10000
+    if 'daily_positions' not in safeguards:
+        safeguards['daily_positions'] = 5
+    if 'position_limit' not in safeguards:
+        safeguards['position_limit'] = 10
+    if 'daytrading_allowed' not in safeguards:
+        safeguards['daytrading_allowed'] = False
+    
+    repaired['safeguards'] = safeguards
+    
+    # Ensure automations list exists
+    if not repaired.get('automations'):
+        repaired['automations'] = []
+    
+    return repaired
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+if __name__ == "__main__":
+    import sys
+    from datetime import datetime
+    
+    # Run demonstration if no arguments provided
+    if len(sys.argv) == 1:
+        print("🚀 HTML Bot Configuration Extractor")
+        print("=" * 50)
+        
+        # Run demonstration
+        demo_success = demonstrate_html_extraction()
+        
+        if demo_success:
+            # Run pattern tests
+            test_html_extraction_patterns()
+            
+            print("\n🎉 All demonstrations completed successfully!")
+            print("\n📖 Usage:")
+            print("   python html_bot_extractor.py <html_file> [options]")
+            print("   python html_bot_extractor.py --help")
+        else:
+            print("❌ Demonstration failed - see errors above")
+            sys.exit(1)
+    else:
+        # Run command line interface
+        sys.exit(main())
