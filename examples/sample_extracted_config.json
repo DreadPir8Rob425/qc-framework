@@ -1,0 +1,49 @@
+{
+  "name": "SPY Weekly Iron Condor",
+  "account": "extracted_bot",
+  "safeguards": {
+    "capital_allocation": 50000.0,
+    "daily_positions": 2,
+    "position_limit": 8,
+    "daytrading_allowed": false
+  },
+  "automations": [
+    {
+      "name": "Iron Condor Scanner",
+      "trigger": {
+        "type": "continuous",
+        "automation_type": "scanner"
+      },
+      "actions": [
+        {
+          "type": "decision",
+          "decision": {
+            "recipe_type": "stock",
+            "comparison": "greater_than",
+            "value": 30.0
+          }
+        },
+        {
+          "type": "open_position",
+          "position": {
+            "strategy_type": "iron_condor",
+            "symbol": "SPY"
+          }
+        }
+      ]
+    }
+  ],
+  "description": "Automated iron condor strategy on SPY with high probability setup",
+  "scan_speed": "5_minutes",
+  "symbols": {
+    "type": "static",
+    "list": [
+      "SPY"
+    ]
+  },
+  "_metadata": {
+    "extracted_at": "2025-05-29 14:49:29.491106",
+    "extraction_method": "html_parser",
+    "html_length": 3276
+  }
+}

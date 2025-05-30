@@ -5,8 +5,8 @@ import json
 from datetime import datetime
 
 # Your existing imports
-from oa_bot_schema import OABotConfigGenerator
-from oa_framework_core import OABot  # This is now the updated version
+from .schema.oa_bot_schema import *
+from oa_bot_framework import OABot  # This is now the updated version
 
 def create_and_run_backtest():
     """
