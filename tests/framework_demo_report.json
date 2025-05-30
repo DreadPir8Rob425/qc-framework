@@ -1,0 +1,37 @@
+{
+  "framework_demo_report": {
+    "timestamp": "2025-05-29T08:17:01.703644",
+    "bot_status": {
+      "name": "Simple SPY Long Call Bot",
+      "state": "running",
+      "total_positions": 0,
+      "open_positions": 0,
+      "total_pnl": 0,
+      "is_healthy": true
+    },
+    "market_state": {
+      "regime": "sideways",
+      "volatility_env": "normal_iv",
+      "key_levels": {
+        "SPY": 463.22,
+        "VIX": 17.96
+      }
+    },
+    "decision_engine_stats": {
+      "total_evaluations": 1,
+      "cache_hits": 0,
+      "cache_hit_rate": 0.0,
+      "cache_size": 1,
+      "cache_ttl_seconds": 60
+    },
+    "framework_components": {
+      "logger": "\u2705 Working",
+      "state_manager": "\u2705 Working",
+      "event_bus": "\u2705 Working",
+      "decision_engine": "\u2705 Working",
+      "position_manager": "\u2705 Working",
+      "analytics": "\u2705 Working",
+      "market_data": "\u2705 Working"
+    }
+  }
+}

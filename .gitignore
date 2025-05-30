@@ -1,11 +1,7 @@
 /__pycache__
-/__pycache__
-/__pycache__
-__pycache__/oa_framework_enums.cpython-313.pyc
 *.db
 oa_framework.db
 /demo_export
-framework_demo_report.json
 /archive
 /html_files
 /configs
